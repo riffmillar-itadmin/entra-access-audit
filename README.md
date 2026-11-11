@@ -5,14 +5,16 @@ and how. It reads the tenant through Microsoft Graph and reports on five areas:
 
 - **Privileged roles:** how many Global Administrators there are, standing
   assignments outside PIM, guests and on-premises synced accounts in admin
-  roles, and admins without phishing-resistant MFA.
+  roles, and admins without phishing-resistant MFA. A role held through a
+  group counts for each member of the group.
 - **Stale accounts:** enabled members and guests that haven't signed in for 90
   days, accounts that never signed in, and guest invitations nobody accepted.
 - **MFA coverage:** members with no MFA registered, accounts that rely on SMS or
   voice alone, and admins without MFA.
 - **Apps:** client secrets and certificates that have expired or are about to,
-  long-lived secrets, high-risk Microsoft Graph application permissions, and
-  app registrations with no owner.
+  long-lived secrets, high-risk Microsoft Graph application permissions, app
+  registrations with no owner, and high-risk delegated permissions consented
+  for every user or by users themselves.
 - **Conditional Access:** whether MFA is required for everyone and for admins,
   whether legacy authentication is blocked, policies left in report-only mode,
   and who is excluded from them.
@@ -67,6 +69,8 @@ writes only its report files, and a snapshot when you ask for one.
 | `RoleManagement.Read.Directory` | Directory role definitions, assignments, PIM eligibility and schedules |
 | `Application.Read.All` | App registrations, their secrets, certificates and owners, and Graph permissions granted to apps |
 | `Policy.Read.All` | Conditional Access policies and security defaults |
+| `DelegatedPermissionGrant.Read.All` | Delegated permissions that admins or users consented to for apps |
+| `GroupMember.Read.All` | Members of the groups that hold a directory role |
 
 These are delegated scopes, and the account that signs in also needs a role
 that can read this data. **Global Reader** is enough, and is the least
@@ -115,6 +119,8 @@ report says why. Two cases are different:
 | APP-03 | Apps | Low | Long-lived client secrets | Warn for a current secret valid longer than `MaxSecretLifetimeDays` (365). |
 | APP-04 | Apps | High | High-risk Microsoft Graph application permissions | Fail for an app granted a permission in `HighRiskPermissions`, unless it is in `AcceptedApps`. |
 | APP-05 | Apps | Low | App registrations without an owner | Warn for an app registration with no owner. |
+| APP-06 | Apps | Medium | High-risk delegated permissions consented for every user | Fail for an app with tenant-wide consent to a Microsoft Graph permission in `HighRiskPermissions`, unless it is in `AcceptedApps`. |
+| APP-07 | Apps | Low | High-risk delegated permissions consented by users | Warn for an app that users consented to a Microsoft Graph permission in `HighRiskPermissions`, naming the users. |
 | CA-01 | Conditional Access | High | MFA required for all users | Fail unless security defaults are on, or an enabled policy requires MFA or an authentication strength for all users on all apps. |
 | CA-02 | Conditional Access | High | MFA required for administrators | Fail unless security defaults are on, or an enabled policy requires MFA for all users or for Global Administrators on all apps. |
 | CA-03 | Conditional Access | High | Legacy authentication blocked | Fail unless security defaults are on, or an enabled policy blocks Exchange ActiveSync and other clients for all users. |
@@ -126,8 +132,11 @@ can take over the tenant or its security, such as Privileged Role
 Administrator, Security Administrator and User Administrator, plus any role
 Graph marks privileged. The full list is `$PrivilegedRoles` in the script.
 
-A role assigned to a group is reported by ROLE-06; its members aren't listed,
-because reading group membership would need another scope.
+A role assigned to a group counts for each member of the group, so the role
+checks and MFA-03 judge each member as if the role were theirs, and name the
+group it comes through. ROLE-06 lists the group itself. If the members can't
+be read, the group counts as one holder, and ROLE-01 and ROLE-06 say so.
+Membership that PIM for Groups makes eligible isn't read yet.
 
 ## Usage
 
@@ -145,7 +154,7 @@ because reading group membership would need another scope.
 ### Unattended runs
 
 For a scheduled audit, sign in as an app instead of a person. Register an app
-in the tenant, grant it the five permissions above as **Application**
+in the tenant, grant it the seven permissions above as **Application**
 permissions with admin consent, add a certificate to it, and run:
 
 ```powershell
@@ -168,8 +177,8 @@ there, or the file named by `-ProfilePath`. The example documents each setting:
 | `MaxSecretLifetimeDays` | 365 | APP-03 |
 | `MinGlobalAdmins`, `MaxGlobalAdmins` | 2, 4 | ROLE-01 |
 | `BreakGlassAccounts` | none | ROLE-02, STALE-01, STALE-02, CA-05 leave them out |
-| `AcceptedApps` | none | APP-04 counts their grants but doesn't list them |
-| `HighRiskPermissions` | 16 permissions | APP-04 |
+| `AcceptedApps` | none | APP-04, APP-06 and APP-07 count their grants but don't list them |
+| `HighRiskPermissions` | 16 permissions | APP-04, APP-06, APP-07 |
 
 Name your emergency access (break-glass) accounts in `BreakGlassAccounts`.
 They are meant to hold Global Administrator permanently, stay out of
@@ -190,7 +199,10 @@ silently ignored.
 | Error | The check itself failed. The message is in the report. |
 
 Nothing passes by default: a check whose data is missing is Skipped and
-counted, never passed. Dates are judged against the time the snapshot was
+counted, never passed. An MFA registration report with no records, in a tenant
+that has users, counts as missing: Microsoft fills it in the background, which
+can take a day in a new tenant. An account the report has no record for makes
+ROLE-05, MFA-01 or MFA-03 Warn, naming it, rather than being left out. Dates are judged against the time the snapshot was
 collected, so evaluating an old snapshot gives the same results it did then.
 
 Exit codes: **0** no Fail and no Error; **1** at least one Fail; **2** at least
@@ -250,6 +262,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.2.0 | 2026-11-10 | Now with 25 checks. Roles held through a group count for each member, read with the new `GroupMember.Read.All` scope. APP-06 and APP-07 report high-risk delegated permissions consented for every user or by users, read with the new `DelegatedPermissionGrant.Read.All` scope. Snapshot schema 2; schema 1 snapshots still evaluate, with the new checks Skipped. Fixes from the first live run: an empty MFA registration report (a new tenant's, before Microsoft fills it) now skips ROLE-05 and MFA-01 to MFA-03 instead of passing them, and accounts with no registration record make those checks Warn, naming them, instead of being left out. |
 | 0.1.0 | 2026-11-10 | First release. Read-only audit on Microsoft Graph with 23 checks across privileged roles, stale accounts, MFA coverage, apps and Conditional Access; HTML, CSV and JSON reports; snapshots evaluated offline with `-FromSnapshot`; app-only sign-in with a certificate; thresholds and break-glass accounts in a local profile. Pester suite on a fictional tenant and a fake Graph, on 5.1 and 7. |
 
 ## License
