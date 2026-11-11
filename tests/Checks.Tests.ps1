@@ -69,7 +69,7 @@ Describe 'The Westmark fixture as it is' {
             'ROLE-01' = 'Pass'; 'ROLE-02' = 'Fail'; 'ROLE-03' = 'Fail'; 'ROLE-04' = 'Fail'; 'ROLE-05' = 'Fail'; 'ROLE-06' = 'Warn'
             'STALE-01' = 'Fail'; 'STALE-02' = 'Fail'; 'STALE-03' = 'Fail'; 'STALE-04' = 'Warn'
             'MFA-01' = 'Fail'; 'MFA-02' = 'Warn'; 'MFA-03' = 'Fail'
-            'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'
+            'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
@@ -183,15 +183,31 @@ Describe 'Privileged roles' {
     It 'ROLE-05 fails on privileged accounts without a phishing-resistant method' {
         $r = (Get-Result (Get-Fixture))['ROLE-05']
         $r.Status | Should -Be 'Fail'
-        Get-Subject $r | Should -Be @('dana.kim@westmark.example', 'sam.ortiz@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example')
+        Get-Subject $r | Should -Be @('dana.kim@westmark.example', 'jo.park@westmark.example', 'riley.ng@westmark.example', 'sam.ortiz@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example')
+        @($r.Findings | Where-Object Subject -eq 'riley.ng@westmark.example')[0].Detail | Should -Match '^Helpdesk Administrator via Helpdesk Tier 2\.'
     }
 
     It 'ROLE-05 passes when each privileged account has a passkey or security key' {
         $s = Get-Fixture
-        foreach ($upn in 'dana.kim@westmark.example', 'sam.ortiz@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example') {
+        foreach ($upn in 'dana.kim@westmark.example', 'riley.ng@westmark.example', 'sam.ortiz@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example') {
             (Get-FixtureItem $s 'Registration' 'userPrincipalName' $upn).methodsRegistered = @('passKeyDeviceBoundAuthenticator')
         }
+        (Get-FixtureItem $s 'RoleGroupMembers' 'groupId' '00000000-0000-4000-8000-000000000101').members = @(
+            (Get-FixtureItem $s 'RoleGroupMembers' 'groupId' '00000000-0000-4000-8000-000000000101').members | Where-Object id -ne '00000000-0000-4000-8000-000000000007')
         (Get-Result $s)['ROLE-05'].Status | Should -Be 'Pass'
+    }
+
+    It 'ROLE-05 warns, naming them, when the only gaps are privileged accounts with no registration record' {
+        # Regression: accounts with no record were left out, and the check passed.
+        $s = Get-Fixture
+        foreach ($upn in 'riley.ng@westmark.example', 'sam.ortiz@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example') {
+            (Get-FixtureItem $s 'Registration' 'userPrincipalName' $upn).methodsRegistered = @('passKeyDeviceBoundAuthenticator')
+        }
+        Remove-FixtureItem $s 'Registration' 'userPrincipalName' 'dana.kim@westmark.example', 'jo.park@westmark.example'
+        $r = (Get-Result $s)['ROLE-05']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('dana.kim@westmark.example', 'jo.park@westmark.example')
+        @($r.Findings | Where-Object Subject -eq 'dana.kim@westmark.example')[0].Detail | Should -Be 'Exchange Administrator. No registration record'
     }
 
     It 'ROLE-05 is skipped without the registration report' {
@@ -204,6 +220,7 @@ Describe 'Privileged roles' {
         $r = (Get-Result $s)['ROLE-06']
         $r.Status | Should -Be 'Warn'
         Get-Subject $r | Should -Be @('Helpdesk Tier 2', 'Westmark Provisioning')
+        @($r.Findings | Where-Object Subject -eq 'Helpdesk Tier 2')[0].Detail | Should -Match 'group of 2 member\(s\); each member is checked'
         Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-06', 'ra-07'
         (Get-Result $s)['ROLE-06'].Status | Should -Be 'Pass'
     }
@@ -216,6 +233,43 @@ Describe 'Privileged roles' {
         @($r.Findings | ForEach-Object Detail) | Should -Match 'Unknown'
         # Users are still matched from the user list.
         (Get-Result $s)['ROLE-03'].Status | Should -Be 'Fail'
+    }
+
+    It 'checks members of a role group as role holders, and names the group' {
+        $r = Get-Result (Get-Fixture)
+        @($r['MFA-03'].Findings | Where-Object Subject -eq 'jo.park@westmark.example')[0].Detail | Should -Be 'Helpdesk Administrator via Helpdesk Tier 2'
+    }
+
+    It 'counts a Global Administrator held through a group once per member' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'RoleAssignments' 'id' 'ra-06').roleDefinitionId = $GlobalAdminRoleId
+        $r = (Get-Result $s)['ROLE-01']
+        Get-Subject $r | Should -Be @('admin.lee@westmark.example', 'bg.one@westmark.example', 'bg.two@westmark.example', 'jo.park@westmark.example', 'riley.ng@westmark.example', 'sam.ortiz@westmark.example')
+        @($r.Findings | Where-Object Subject -eq 'jo.park@westmark.example')[0].Detail | Should -Be 'Active via Helpdesk Tier 2'
+        $r.Status | Should -Be 'Fail'
+        $r2 = (Get-Result $s)['ROLE-02']
+        Get-Subject $r2 | Should -Be @('admin.lee@westmark.example', 'jo.park@westmark.example', 'riley.ng@westmark.example')
+        @($r2.Findings | Where-Object Subject -eq 'jo.park@westmark.example')[0].Detail | Should -Be 'User, permanently active via Helpdesk Tier 2'
+    }
+
+    It 'counts a role group as one holder, and says so, when its members were not read' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'RoleAssignments' 'id' 'ra-06').roleDefinitionId = $GlobalAdminRoleId
+        Set-NotCollected $s 'RoleGroupMembers' 'Denied'
+        $r = Get-Result $s
+        Get-Subject $r['ROLE-01'] | Should -Contain 'Helpdesk Tier 2'
+        $r['ROLE-01'].Summary | Should -Match "1 group\(s\) hold the role and their members weren't read \(RoleGroupMembers: Denied\)"
+        @($r['ROLE-06'].Findings | Where-Object Subject -eq 'Helpdesk Tier 2')[0].Detail | Should -Match "members weren't read \(RoleGroupMembers: Denied\)"
+        Get-Subject $r['MFA-03'] | Should -Not -Contain 'jo.park@westmark.example'
+    }
+
+    It 'reads a schema 1 snapshot, which has no group members, and says the members were not read' {
+        $s = Get-Fixture
+        $s.SchemaVersion = 1
+        $s.Datasets.PSObject.Properties.Remove('RoleGroupMembers')
+        $r = (Get-Result $s)['ROLE-06']
+        $r.Status | Should -Be 'Warn'
+        @($r.Findings | Where-Object Subject -eq 'Helpdesk Tier 2')[0].Detail | Should -Match 'RoleGroupMembers: NotCollected'
     }
 
     It 'every privileged-role check is skipped without role assignments' {
@@ -301,10 +355,32 @@ Describe 'MFA coverage' {
         $r.Summary | Should -Match '1 enabled member\(s\) had no registration record'
     }
 
+    It 'MFA-01 warns, naming them, when the only gaps are members with no registration record' {
+        $s = Get-Fixture
+        foreach ($upn in 'jo.park@westmark.example', 'old.unused@westmark.example') { (Get-FixtureItem $s 'Registration' 'userPrincipalName' $upn).isMfaRegistered = $true }
+        $r = (Get-Result $s)['MFA-01']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('new.hire@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'No registration record'
+    }
+
     It 'MFA-01 passes when every member has registered' {
         $s = Get-Fixture
         foreach ($upn in 'jo.park@westmark.example', 'old.unused@westmark.example') { (Get-FixtureItem $s 'Registration' 'userPrincipalName' $upn).isMfaRegistered = $true }
+        $s.Datasets.Registration.Items = @($s.Datasets.Registration.Items) + [pscustomobject]@{
+            id = (Get-UserId $s 'new.hire@westmark.example'); userPrincipalName = 'new.hire@westmark.example'; isMfaRegistered = $true; methodsRegistered = @('microsoftAuthenticatorPush') }
         (Get-Result $s)['MFA-01'].Status | Should -Be 'Pass'
+    }
+
+    It 'treats an empty registration report as not collected, so ROLE-05 and MFA-01 to MFA-03 are skipped, not passed' {
+        # Regression: a new tenant's report was empty and these four passed.
+        $s = Get-Fixture
+        $s.Datasets.Registration.Items = @()
+        $r = Get-Result $s
+        foreach ($id in 'ROLE-05', 'MFA-01', 'MFA-02', 'MFA-03') {
+            $r[$id].Status | Should -Be 'Skipped' -Because $id
+            $r[$id].Summary | Should -Match 'Registration was not collected \(Empty\): The MFA registration report has no records' -Because $id
+        }
     }
 
     It 'MFA-01 to MFA-03 are skipped without the registration report' {
@@ -331,9 +407,20 @@ Describe 'MFA coverage' {
         $s = Get-Fixture
         $r = (Get-Result $s)['MFA-03']
         $r.Status | Should -Be 'Fail'
-        Get-Subject $r | Should -Be @('vendor.ops_partner.example#EXT#@westmark.example')
+        Get-Subject $r | Should -Be @('jo.park@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example')
         (Get-FixtureItem $s 'Registration' 'userPrincipalName' 'vendor.ops_partner.example#EXT#@westmark.example').isMfaRegistered = $true
+        (Get-FixtureItem $s 'Registration' 'userPrincipalName' 'jo.park@westmark.example').isMfaRegistered = $true
         (Get-Result $s)['MFA-03'].Status | Should -Be 'Pass'
+    }
+
+    It 'MFA-03 warns when the only gap is a privileged account with no registration record' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Registration' 'userPrincipalName' 'jo.park@westmark.example').isMfaRegistered = $true
+        Remove-FixtureItem $s 'Registration' 'userPrincipalName' 'vendor.ops_partner.example#EXT#@westmark.example'
+        $r = (Get-Result $s)['MFA-03']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('vendor.ops_partner.example#EXT#@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Security Administrator. No registration record'
     }
 }
 
@@ -390,6 +477,47 @@ Describe 'Apps' {
         Get-Subject $r | Should -Be @('Westmark Payroll Connector')
         (Get-FixtureItem $s 'Applications' 'displayName' 'Westmark Payroll Connector').owners = @([pscustomobject]@{ id = '00000000-0000-4000-8000-000000000014' })
         (Get-Result $s)['APP-05'].Status | Should -Be 'Pass'
+    }
+
+    It 'APP-06 fails on tenant-wide consent to high-risk Graph permissions, ignoring other APIs and low-risk scopes' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['APP-06']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('Westmark Mail Assistant')
+        $r.Findings[0].Detail | Should -Be 'Mail.ReadWrite, Mail.Send, consented for every user'
+        Remove-FixtureItem $s 'DelegatedPermissionGrants' 'id' 'pg-01'
+        (Get-Result $s)['APP-06'].Status | Should -Be 'Pass'
+    }
+
+    It 'APP-06 counts, but does not list, apps named in AcceptedApps' {
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.AcceptedApps = @('westmark mail assistant')
+        $r = (Get-Result (Get-Fixture) $p)['APP-06']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 grant\(s\) to apps listed in AcceptedApps'
+    }
+
+    It 'APP-06 names the app by its ID when the service principal is unknown' {
+        $s = Get-Fixture
+        Remove-FixtureItem $s 'ServicePrincipals' 'id' '00000000-0000-4000-8000-000000000602'
+        Get-Subject (Get-Result $s)['APP-06'] | Should -Be @('00000000-0000-4000-8000-000000000602')
+    }
+
+    It 'APP-07 warns on user consent to high-risk Graph permissions, one finding per app' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['APP-07']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Pocket Files Sync')
+        $r.Findings[0].Detail | Should -Be 'Files.ReadWrite.All, consented by 2 user(s): jo.park@westmark.example, riley.ng@westmark.example'
+        Remove-FixtureItem $s 'DelegatedPermissionGrants' 'id' 'pg-03', 'pg-04'
+        (Get-Result $s)['APP-07'].Status | Should -Be 'Pass'
+    }
+
+    It 'APP-06 and APP-07 are skipped without the grants or the service principals' {
+        foreach ($ds in 'DelegatedPermissionGrants', 'ServicePrincipals') {
+            $s = Get-Fixture; Set-NotCollected $s $ds 'Denied'
+            $r = Get-Result $s
+            foreach ($id in 'APP-06', 'APP-07') { $r[$id].Status | Should -Be 'Skipped' -Because "$id without $ds" }
+        }
     }
 
     It 'APP-01 to APP-03 and APP-05 are skipped without app registrations' {
@@ -500,6 +628,14 @@ Describe 'Conditional Access' {
         $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers | Where-Object { $_ -ne (Get-UserId $s 'jo.park@westmark.example') })
         $p.conditions.users.excludeGroups = @()
         (Get-Result $s)['CA-05'].Status | Should -Be 'Pass'
+    }
+
+    It 'CA-05 says there is nothing to exclude from when no policy is enabled' {
+        $s = Get-Fixture
+        foreach ($p in $s.Datasets.ConditionalAccess.Items) { $p.state = 'disabled' }
+        $r = (Get-Result $s)['CA-05']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Be 'No policy is enabled, so none has exclusions.'
     }
 
     It 'CA-05 reports the break-glass exclusions too when none are named' {

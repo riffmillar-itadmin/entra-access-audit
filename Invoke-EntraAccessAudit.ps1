@@ -46,6 +46,10 @@
         RoleManagement.Read.Directory  role assignments, PIM eligibility
         Application.Read.All           app registrations, granted permissions
         Policy.Read.All                Conditional Access, security defaults
+        DelegatedPermissionGrant.Read.All
+                                       delegated permissions that admins
+                                       or users consented to
+        GroupMember.Read.All           members of groups that hold a role
     The Global Reader role is enough to run it. For unattended runs, grant an
     app registration the same permissions as Application permissions and use
     -ClientId, -TenantId and -CertificateThumbprint.
@@ -98,6 +102,14 @@
     0.1.0  2026-11-10  First release: privileged roles, stale accounts, MFA
                        coverage, app credentials and permissions, and
                        Conditional Access checks; HTML, CSV and JSON reports.
+    0.2.0  2026-11-10  Roles held through a group count for each member
+                       (GroupMember.Read.All). APP-06 and APP-07: high-risk
+                       delegated permissions consented for every user or by
+                       users (DelegatedPermissionGrant.Read.All). Snapshot
+                       schema 2; schema 1 snapshots still evaluate. An empty
+                       MFA registration report skips ROLE-05 and MFA-01 to
+                       MFA-03 instead of passing them, and accounts with no
+                       record make them Warn.
 #>
 
 [CmdletBinding()]
@@ -114,8 +126,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.1.0'
-$SnapshotSchemaVersion = 1
+$EntraAccessAuditVersion = '0.2.0'
+$SnapshotSchemaVersion = 2
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -124,6 +136,8 @@ $AuditScopes = @(
     'RoleManagement.Read.Directory'
     'Application.Read.All'
     'Policy.Read.All'
+    'DelegatedPermissionGrant.Read.All'
+    'GroupMember.Read.All'
 )
 
 # Microsoft Graph's own service principal, whose app roles are the Graph
@@ -398,6 +412,7 @@ function Get-TenantSnapshot {
     $datasets.RoleAssignments = Read-RoleDataset -Path '/v1.0/roleManagement/directory/roleAssignments'
     $datasets.RoleAssignmentSchedules = Read-Dataset -Uri '/v1.0/roleManagement/directory/roleAssignmentSchedules' -Needs 'Microsoft Entra ID P2 (PIM)'
     $datasets.RoleEligibility = Read-RoleDataset -Path '/v1.0/roleManagement/directory/roleEligibilitySchedules' -Needs 'Microsoft Entra ID P2 (PIM)'
+    $datasets.RoleGroupMembers = Get-RoleGroupMember -Datasets $datasets
 
     Write-Host 'Reading MFA registration...'
     $datasets.Registration = Read-Dataset -Uri '/v1.0/reports/authenticationMethods/userRegistrationDetails' -Needs 'Microsoft Entra ID P1'
@@ -405,6 +420,8 @@ function Get-TenantSnapshot {
     Write-Host 'Reading app registrations and permissions...'
     $datasets.Applications = Read-Dataset -Uri '/v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$expand=owners($select=id)&$top=100'
     $datasets.GraphPermissionGrants = Get-GraphPermissionGrant
+    $datasets.ServicePrincipals = Read-Dataset -Uri '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType&$top=999'
+    $datasets.DelegatedPermissionGrants = Read-Dataset -Uri '/v1.0/oauth2PermissionGrants'
 
     Write-Host 'Reading Conditional Access and security defaults...'
     $datasets.ConditionalAccess = Read-Dataset -Uri '/v1.0/identity/conditionalAccess/policies' -Needs 'Microsoft Entra ID P1'
@@ -456,6 +473,54 @@ function Get-GraphPermissionGrant {
     }
 }
 
+function Get-RoleGroupMember {
+    # Members of every group that holds a directory role, active or eligible,
+    # so each person who holds a role through a group is checked like one who
+    # holds it directly. Role-assignable groups can't contain groups, but
+    # transitiveMembers covers any that do. All or nothing: one group that
+    # can't be read fails the dataset, so no check judges a partial list.
+    param([Parameter(Mandatory)]$Datasets)
+    $groups = [ordered]@{}
+    $unexpanded = 0
+    foreach ($name in 'RoleAssignments', 'RoleEligibility') {
+        $ds = $Datasets[$name]
+        if ($null -eq $ds -or "$(Get-Value $ds 'Status')" -ne 'Collected') { continue }
+        foreach ($a in @(Get-Value $ds 'Items')) {
+            if ($null -eq $a) { continue }
+            $principal = Get-Value $a 'principal'
+            if ($null -eq $principal) { $unexpanded++; continue }
+            if ("$(Get-Value $principal '@odata.type')" -match 'group$') {
+                $groups["$(Get-Value $a 'principalId')"] = "$(Get-Value $principal 'displayName')"
+            }
+        }
+    }
+    if ($unexpanded -gt 0) {
+        return (New-Dataset -Status 'NotCollected' -Reason "$unexpanded role assignment(s) were read without principal details, so groups among them can't be told apart.")
+    }
+    try {
+        $items = foreach ($id in $groups.Keys) {
+            $members = Get-GraphCollection -Uri "/v1.0/groups/$id/transitiveMembers?`$select=id,displayName,userPrincipalName&`$top=999"
+            [ordered]@{
+                groupId     = $id
+                displayName = $groups[$id]
+                members     = @(foreach ($m in $members) {
+                        [ordered]@{
+                            '@odata.type'     = Get-Value $m '@odata.type'
+                            id                = Get-Value $m 'id'
+                            displayName       = Get-Value $m 'displayName'
+                            userPrincipalName = Get-Value $m 'userPrincipalName'
+                        }
+                    })
+            }
+        }
+        return (New-Dataset -Status 'Collected' -Items @($items))
+    } catch {
+        $text = Get-ErrorText $_
+        Write-Verbose "Couldn't read role group members: $text"
+        return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
+    }
+}
+
 function Connect-AuditGraph {
     # Signs in to Microsoft Graph with the read-only scopes, or as an app with
     # a certificate. Only Microsoft.Graph.Authentication is needed.
@@ -491,6 +556,44 @@ function Connect-AuditGraph {
 #  Evaluate
 # ---------------------------------------------------------------------------
 
+function New-RoleHolder {
+    # Who a role assignment or group membership names: type, user record and
+    # a name to show.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Builds an object in memory; changes nothing.')]
+    param($Principal, [string]$PrincipalId, [hashtable]$UsersById)
+    $type = switch -Regex ("$(Get-Value $Principal '@odata.type')") {
+        'user$' { 'User' }
+        'group$' { 'Group' }
+        'servicePrincipal$' { 'ServicePrincipal' }
+        default { if ($UsersById.ContainsKey($PrincipalId)) { 'User' } else { 'Unknown' } }
+    }
+    $user = $null
+    if ($UsersById.ContainsKey($PrincipalId)) { $user = $UsersById[$PrincipalId] }
+    $name = Get-Value $user 'userPrincipalName'
+    if (-not $name) { $name = Get-Value $Principal 'userPrincipalName' }
+    if (-not $name) { $name = Get-Value $Principal 'displayName' }
+    if (-not $name) { $name = $PrincipalId }
+    return [pscustomobject]@{ PrincipalId = $PrincipalId; PrincipalType = $type; Name = "$name"; User = $user }
+}
+
+function New-RoleHolderRow {
+    # One holder row: the principal, the role it holds, and how.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Builds an object in memory; changes nothing.')]
+    param($Holder, [string]$RoleId, [string]$RoleName, [string]$Kind, [bool]$Standing, [hashtable]$BreakGlassIds, [string]$Via)
+    return [pscustomobject]@{
+        RoleId        = $RoleId
+        RoleName      = $RoleName
+        PrincipalId   = $Holder.PrincipalId
+        PrincipalType = $Holder.PrincipalType
+        Name          = $Holder.Name
+        User          = $Holder.User
+        Kind          = $Kind
+        Standing      = $Standing
+        BreakGlass    = $BreakGlassIds.ContainsKey($Holder.PrincipalId)
+        Via           = $Via
+    }
+}
+
 function Get-AuditContext {
     # Indexes the snapshot once, for every check: users by ID, break-glass
     # accounts, privileged role holders and MFA registration.
@@ -498,6 +601,8 @@ function Get-AuditContext {
     $ds = Get-Value $Snapshot 'Datasets'
     $status = @{}
     foreach ($p in $ds.PSObject.Properties) { $status[$p.Name] = "$(Get-Value $p.Value 'Status')" }
+    # Snapshots from 0.1.0 have no group members; say so in the checks.
+    if (-not $status.ContainsKey('RoleGroupMembers')) { $status['RoleGroupMembers'] = 'NotCollected' }
 
     $usersById = @{}
     foreach ($u in @(Get-Value $ds 'Users', 'Items')) { if ($null -ne $u) { $usersById["$(Get-Value $u 'id')"] = $u } }
@@ -530,7 +635,17 @@ function Get-AuditContext {
         }
     }
 
+    # Members of groups that hold a role, by group ID, when they were read.
+    $groupMembers = @{}
+    foreach ($g in @(Get-Value $ds 'RoleGroupMembers', 'Items')) {
+        if ($null -ne $g) { $groupMembers["$(Get-Value $g 'groupId')"] = @(Get-Value $g 'members' | Where-Object { $null -ne $_ }) }
+    }
+
+    # One row per principal and role. A group whose members were read is
+    # replaced by a row for each member, marked Via the group, and listed in
+    # RoleGroups; a group whose members weren't read stays a row of its own.
     $holders = [Collections.Generic.List[object]]::new()
+    $roleGroups = [Collections.Generic.List[object]]::new()
     $sources = @(
         @{ Kind = 'Active'; Items = @(Get-Value $ds 'RoleAssignments', 'Items') }
         @{ Kind = 'Eligible'; Items = @(Get-Value $ds 'RoleEligibility', 'Items') }
@@ -540,37 +655,33 @@ function Get-AuditContext {
             if ($null -eq $a) { continue }
             $roleId = "$(Get-Value $a 'roleDefinitionId')"
             if (-not $privilegedRoleIds.ContainsKey($roleId)) { continue }
+            $roleName = $(if ($roleNames.ContainsKey($roleId)) { $roleNames[$roleId] } else { $roleId })
             $principalId = "$(Get-Value $a 'principalId')"
-            $principal = Get-Value $a 'principal'
-            $odataType = "$(Get-Value $principal '@odata.type')"
-            $type = switch -Regex ($odataType) {
-                'user$' { 'User' }
-                'group$' { 'Group' }
-                'servicePrincipal$' { 'ServicePrincipal' }
-                default { if ($usersById.ContainsKey($principalId)) { 'User' } else { 'Unknown' } }
+            $standing = ($source.Kind -eq 'Active' -and -not $timeBound.ContainsKey("$principalId|$roleId"))
+            $holder = New-RoleHolder -Principal (Get-Value $a 'principal') -PrincipalId $principalId -UsersById $usersById
+            if ($holder.PrincipalType -eq 'Group' -and $groupMembers.ContainsKey($principalId)) {
+                $members = $groupMembers[$principalId]
+                $roleGroups.Add([pscustomobject]@{ Name = $holder.Name; RoleName = $roleName; Kind = $source.Kind; MemberCount = $members.Count })
+                foreach ($m in $members) {
+                    $member = New-RoleHolder -Principal $m -PrincipalId "$(Get-Value $m 'id')" -UsersById $usersById
+                    $holders.Add((New-RoleHolderRow $member $roleId $roleName $source.Kind $standing $breakGlassIds $holder.Name))
+                }
+                continue
             }
-            $user = $null
-            if ($usersById.ContainsKey($principalId)) { $user = $usersById[$principalId] }
-            $name = Get-Value $user 'userPrincipalName'
-            if (-not $name) { $name = Get-Value $principal 'userPrincipalName' }
-            if (-not $name) { $name = Get-Value $principal 'displayName' }
-            if (-not $name) { $name = $principalId }
-            $holders.Add([pscustomobject]@{
-                    RoleId        = $roleId
-                    RoleName      = $(if ($roleNames.ContainsKey($roleId)) { $roleNames[$roleId] } else { $roleId })
-                    PrincipalId   = $principalId
-                    PrincipalType = $type
-                    Name          = "$name"
-                    User          = $user
-                    Kind          = $source.Kind
-                    Standing      = ($source.Kind -eq 'Active' -and -not $timeBound.ContainsKey("$principalId|$roleId"))
-                    BreakGlass    = $breakGlassIds.ContainsKey($principalId)
-                })
+            $holders.Add((New-RoleHolderRow $holder $roleId $roleName $source.Kind $standing $breakGlassIds ''))
         }
     }
 
     $registration = @{}
     foreach ($r in @(Get-Value $ds 'Registration', 'Items')) { if ($null -ne $r) { $registration["$(Get-Value $r 'id')"] = $r } }
+    # An empty registration report for a tenant with users means Microsoft
+    # hasn't filled it yet, not that nobody is registered. Treat it as not
+    # collected, so the checks that need it are Skipped, never passed.
+    $statusReason = @{}
+    if ($status['Registration'] -eq 'Collected' -and $registration.Count -eq 0 -and $usersById.Count -gt 0) {
+        $status['Registration'] = 'Empty'
+        $statusReason['Registration'] = "The MFA registration report has no records, though the tenant has $($usersById.Count) user(s). Microsoft fills it in the background, which can take a day in a new tenant."
+    }
 
     $collectedAt = ConvertTo-UtcDate (Get-Value $Snapshot 'CollectedAt')
     if ($null -eq $collectedAt) { throw 'The snapshot has no CollectedAt time.' }
@@ -584,7 +695,9 @@ function Get-AuditContext {
         UsersById     = $usersById
         BreakGlassIds = $breakGlassIds
         Holders       = $holders.ToArray()
+        RoleGroups    = $roleGroups.ToArray()
         Registration  = $registration
+        StatusReason  = $statusReason
     }
 }
 
@@ -626,9 +739,17 @@ function Get-UserHolder {
     foreach ($h in $Context.Holders) {
         if ($h.PrincipalType -ne 'User' -or $seen.ContainsKey($h.PrincipalId)) { continue }
         $seen[$h.PrincipalId] = $true
-        $roles = @($Context.Holders | Where-Object PrincipalId -eq $h.PrincipalId | ForEach-Object RoleName | Sort-Object -Unique)
+        $roles = @($Context.Holders | Where-Object PrincipalId -eq $h.PrincipalId | ForEach-Object { Get-HolderRoleText $_ } | Sort-Object -Unique)
         [pscustomobject]@{ PrincipalId = $h.PrincipalId; Name = $h.Name; User = $h.User; Roles = $roles -join ', ' }
     }
+}
+
+function Get-HolderRoleText {
+    # A role as held: 'Helpdesk Administrator', or with 'via <group>' when a
+    # group grants it.
+    param($Holder)
+    if ($Holder.Via) { return "$($Holder.RoleName) via $($Holder.Via)" }
+    return $Holder.RoleName
 }
 
 function Test-PolicyGrantsMfa {
@@ -682,10 +803,12 @@ $AuditChecks = @(
             $people = @($ga | ForEach-Object PrincipalId | Sort-Object -Unique)
             $findings = foreach ($id in $people) {
                 $h = @($ga | Where-Object PrincipalId -eq $id)
-                New-Finding $h[0].Name (@($h | ForEach-Object Kind | Sort-Object -Unique) -join ', ')
+                New-Finding $h[0].Name (@($h | ForEach-Object { if ($_.Via) { "$($_.Kind) via $($_.Via)" } else { $_.Kind } } | Sort-Object -Unique) -join ', ')
             }
             $note = ''
             if ($Context.Status['RoleEligibility'] -ne 'Collected') { $note = " PIM-eligible assignments weren't counted (RoleEligibility: $($Context.Status['RoleEligibility']))." }
+            $groups = @($ga | Where-Object PrincipalType -eq 'Group')
+            if ($groups.Count -gt 0) { $note += " $($groups.Count) group(s) hold the role and their members weren't read (RoleGroupMembers: $($Context.Status['RoleGroupMembers'])), so each counts as one." }
             $min = $Context.Profile.MinGlobalAdmins; $max = $Context.Profile.MaxGlobalAdmins
             $n = $people.Count
             if ($n -gt $max) { return (New-Outcome Fail "$n accounts hold Global Administrator; the most allowed is $max.$note" $findings) }
@@ -704,7 +827,10 @@ $AuditChecks = @(
             if ($Context.Status['RoleAssignmentSchedules'] -ne 'Collected') {
                 $note = " PIM schedules weren't collected ($($Context.Status['RoleAssignmentSchedules'])), so every active assignment counts as standing."
             }
-            $findings = foreach ($h in $standing) { New-Finding $h.Name "$($h.PrincipalType), permanently active" }
+            $findings = foreach ($h in $standing) {
+                $via = if ($h.Via) { " via $($h.Via)" } else { '' }
+                New-Finding $h.Name "$($h.PrincipalType), permanently active$via"
+            }
             if ($standing.Count -gt 0) { return (New-Outcome Fail "$($standing.Count) account(s) hold Global Administrator permanently, outside break-glass.$note" $findings) }
             return (New-Outcome Pass "No account holds Global Administrator permanently, outside break-glass.$note")
         }
@@ -740,18 +866,19 @@ $AuditChecks = @(
         Test = {
             param($Context)
             $findings = [Collections.Generic.List[object]]::new()
-            $unknown = 0
+            $unknown = [Collections.Generic.List[object]]::new()
             foreach ($h in @(Get-UserHolder $Context)) {
-                if (-not $Context.Registration.ContainsKey($h.PrincipalId)) { $unknown++; continue }
+                if (-not $Context.Registration.ContainsKey($h.PrincipalId)) { $unknown.Add((New-Finding $h.Name "$($h.Roles). No registration record")); continue }
                 $methods = @(Get-Value $Context.Registration[$h.PrincipalId] 'methodsRegistered')
                 if (-not @($methods | Where-Object { $PhishingResistantMethods -contains $_ })) {
                     $listed = if ($methods.Count) { $methods -join ', ' } else { 'none' }
                     $findings.Add((New-Finding $h.Name "$($h.Roles). Registered: $listed"))
                 }
             }
-            $note = if ($unknown) { " $unknown privileged account(s) had no registration record (disabled accounts aren't in the report)." } else { '' }
+            $note = if ($unknown.Count) { " $($unknown.Count) privileged account(s) had no registration record (disabled accounts aren't in the report)." } else { '' }
             if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) privileged account(s) have no passkey, security key, Windows Hello or certificate registered.$note" $findings) }
-            return (New-Outcome Pass "Every privileged account has a phishing-resistant method registered.$note")
+            if ($unknown.Count -gt 0) { return (New-Outcome Warn "$($unknown.Count) privileged account(s) have no registration record, so their methods couldn't be checked." $unknown) }
+            return (New-Outcome Pass 'Every privileged account has a phishing-resistant method registered.')
         }
     }
     [pscustomobject]@{
@@ -761,11 +888,17 @@ $AuditChecks = @(
         Test = {
             param($Context)
             $other = @($Context.Holders | Where-Object { $_.PrincipalType -ne 'User' } | Sort-Object Name, RoleName)
-            $findings = foreach ($h in $other) {
-                $what = if ($h.PrincipalType -eq 'Group') { 'group; its members hold the role and are not listed here' } else { $h.PrincipalType }
-                New-Finding $h.Name "$($h.RoleName) ($($h.Kind), $what)"
-            }
-            if ($other.Count -gt 0) { return (New-Outcome Warn "$($other.Count) privileged assignment(s) go to a group or an app. Review who controls each." $findings) }
+            $findings = @(
+                foreach ($g in @($Context.RoleGroups | Sort-Object Name, RoleName)) {
+                    New-Finding $g.Name "$($g.RoleName) ($($g.Kind), group of $($g.MemberCount) member(s); each member is checked as a role holder)"
+                }
+                foreach ($h in $other) {
+                    $what = if ($h.PrincipalType -eq 'Group') { "group; its members weren't read (RoleGroupMembers: $($Context.Status['RoleGroupMembers'])), so they aren't checked" } else { $h.PrincipalType }
+                    $via = if ($h.Via) { ", member of $($h.Via)" } else { '' }
+                    New-Finding $h.Name "$($h.RoleName) ($($h.Kind), $what$via)"
+                }
+            )
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) privileged assignment(s) go to a group or an app. Review who controls each." $findings) }
             return (New-Outcome Pass 'Every privileged role is assigned to user accounts directly.')
         }
     }
@@ -855,18 +988,19 @@ $AuditChecks = @(
         Needs = @('Users', 'Registration')
         Test = {
             param($Context)
-            $unknown = 0
+            $unknown = [Collections.Generic.List[object]]::new()
             $findings = foreach ($u in (Get-EnabledUser $Context 'Member')) {
                 $id = "$(Get-Value $u 'id')"
-                if (-not $Context.Registration.ContainsKey($id)) { $unknown++; continue }
+                if (-not $Context.Registration.ContainsKey($id)) { $unknown.Add((New-Finding "$(Get-Value $u 'userPrincipalName')" 'No registration record')); continue }
                 if ((Get-Value $Context.Registration[$id] 'isMfaRegistered') -ne $true) {
                     New-Finding "$(Get-Value $u 'userPrincipalName')" 'No MFA method registered'
                 }
             }
             $findings = @($findings)
-            $note = if ($unknown) { " $unknown enabled member(s) had no registration record yet." } else { '' }
+            $note = if ($unknown.Count) { " $($unknown.Count) enabled member(s) had no registration record yet." } else { '' }
             if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) enabled member account(s) have no MFA method registered.$note" $findings) }
-            return (New-Outcome Pass "Every enabled member has an MFA method registered.$note")
+            if ($unknown.Count -gt 0) { return (New-Outcome Warn "$($unknown.Count) enabled member(s) have no registration record, so their MFA couldn't be checked." $unknown) }
+            return (New-Outcome Pass 'Every enabled member has an MFA method registered.')
         }
     }
     [pscustomobject]@{
@@ -896,15 +1030,18 @@ $AuditChecks = @(
         Needs = @('RoleAssignments', 'Registration')
         Test = {
             param($Context)
+            $unknown = [Collections.Generic.List[object]]::new()
             $findings = foreach ($h in @(Get-UserHolder $Context)) {
-                if (-not $Context.Registration.ContainsKey($h.PrincipalId)) { continue }
+                if (-not $Context.Registration.ContainsKey($h.PrincipalId)) { $unknown.Add((New-Finding $h.Name "$($h.Roles). No registration record")); continue }
                 if ((Get-Value $Context.Registration[$h.PrincipalId] 'isMfaRegistered') -ne $true) {
                     New-Finding $h.Name $h.Roles
                 }
             }
             $findings = @($findings)
-            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) privileged account(s) have no MFA method registered." $findings) }
-            return (New-Outcome Pass 'Every privileged account with a registration record has MFA registered.')
+            $note = if ($unknown.Count) { " $($unknown.Count) privileged account(s) had no registration record." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) privileged account(s) have no MFA method registered.$note" $findings) }
+            if ($unknown.Count -gt 0) { return (New-Outcome Warn "$($unknown.Count) privileged account(s) have no registration record, so their MFA couldn't be checked." $unknown) }
+            return (New-Outcome Pass 'Every privileged account has MFA registered.')
         }
     }
     [pscustomobject]@{
@@ -996,6 +1133,43 @@ $AuditChecks = @(
             $findings = @($findings)
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) app registration(s) have no owner to answer for them." $findings) }
             return (New-Outcome Pass 'Every app registration has an owner.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'APP-06'; Area = 'Apps'; Severity = 'Medium'
+        Title = 'High-risk delegated permissions consented for every user'
+        Needs = @('DelegatedPermissionGrants', 'ServicePrincipals')
+        Test = {
+            param($Context)
+            $grants = @(Get-DelegatedGrant $Context | Where-Object ConsentType -eq 'AllPrincipals')
+            $accepted = @($grants | Where-Object Accepted)
+            $findings = foreach ($g in @($grants | Where-Object { -not $_.Accepted })) {
+                New-Finding $g.App "$($g.Scopes -join ', '), consented for every user"
+            }
+            $findings = @($findings)
+            $note = if ($accepted.Count) { " $($accepted.Count) grant(s) to apps listed in AcceptedApps were not counted." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) app(s) can use high-risk Microsoft Graph permissions on behalf of any user who signs in to them, by tenant-wide consent.$note" $findings) }
+            return (New-Outcome Pass "No app has tenant-wide consent to a high-risk delegated permission.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'APP-07'; Area = 'Apps'; Severity = 'Low'
+        Title = 'High-risk delegated permissions consented by users'
+        Needs = @('DelegatedPermissionGrants', 'ServicePrincipals')
+        Test = {
+            param($Context)
+            $grants = @(Get-DelegatedGrant $Context | Where-Object { $_.ConsentType -eq 'Principal' -and -not $_.Accepted })
+            $findings = foreach ($app in @($grants | Group-Object App | Sort-Object Name)) {
+                $scopes = @($app.Group | ForEach-Object Scopes | Sort-Object -Unique)
+                $people = @($app.Group | ForEach-Object PrincipalId | Sort-Object -Unique)
+                $names = foreach ($id in $people) {
+                    if ($Context.UsersById.ContainsKey($id)) { "$(Get-Value $Context.UsersById[$id] 'userPrincipalName')" } else { $id }
+                }
+                New-Finding $app.Name "$($scopes -join ', '), consented by $($people.Count) user(s): $(@($names | Sort-Object) -join ', ')"
+            }
+            $findings = @($findings)
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) app(s) hold high-risk Microsoft Graph permissions that users consented to themselves. Review each, and consider requiring admin consent." $findings) }
+            return (New-Outcome Pass 'No user has consented to a high-risk delegated permission.')
         }
     }
     [pscustomobject]@{
@@ -1092,6 +1266,7 @@ $AuditChecks = @(
             }
             $findings = @($findings)
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) exclusion(s) from enabled policies, beyond the break-glass accounts. Check each is still needed." $findings) }
+            if (@(Get-EnabledPolicy $Context).Count -eq 0) { return (New-Outcome Pass 'No policy is enabled, so none has exclusions.') }
             return (New-Outcome Pass 'Enabled policies exclude only the break-glass accounts.')
         }
     }
@@ -1119,6 +1294,39 @@ function Get-AppCredential {
     }
 }
 
+function Get-DelegatedGrant {
+    # Delegated permission grants on Microsoft Graph that include a permission
+    # in HighRiskPermissions, one row per grant, with the app's name. Grants
+    # on other APIs are left out, since their permission names mean
+    # something else.
+    param($Context)
+    $sps = @{}
+    foreach ($sp in @(Get-Value $Context.Snapshot 'Datasets', 'ServicePrincipals', 'Items')) {
+        if ($null -ne $sp) { $sps["$(Get-Value $sp 'id')"] = $sp }
+    }
+    $risky = @($Context.Profile.HighRiskPermissions)
+    $accepted = @($Context.Profile.AcceptedApps | ForEach-Object { "$_".ToLowerInvariant() })
+    foreach ($g in @(Get-Value $Context.Snapshot 'Datasets', 'DelegatedPermissionGrants', 'Items')) {
+        if ($null -eq $g) { continue }
+        $resource = $sps["$(Get-Value $g 'resourceId')"]
+        if ("$(Get-Value $resource 'appId')" -ne $GraphAppId) { continue }
+        $high = @("$(Get-Value $g 'scope')" -split '\s+' | Where-Object { $_ -and $risky -contains $_ } | Sort-Object -Unique)
+        if ($high.Count -eq 0) { continue }
+        $clientId = "$(Get-Value $g 'clientId')"
+        $client = $sps[$clientId]
+        $name = "$(Get-Value $client 'displayName')"
+        if (-not $name) { $name = $clientId }
+        $keys = @($name, $clientId, "$(Get-Value $client 'appId')" | ForEach-Object { $_.ToLowerInvariant() })
+        [pscustomobject]@{
+            App         = $name
+            ConsentType = "$(Get-Value $g 'consentType')"
+            PrincipalId = "$(Get-Value $g 'principalId')"
+            Scopes      = $high
+            Accepted    = (@($keys | Where-Object { $_ -and $accepted -contains $_ }).Count -gt 0)
+        }
+    }
+}
+
 function Invoke-AuditCheck {
     # Runs every check against a snapshot. A check whose datasets weren't
     # collected is Skipped with the reason; one that throws is an Error.
@@ -1129,7 +1337,7 @@ function Invoke-AuditCheck {
         if ($missing.Count -gt 0) {
             $why = foreach ($m in $missing) {
                 $state = $context.Status[$m]; if (-not $state) { $state = 'NotCollected' }
-                $reason = "$(Get-Value $Snapshot 'Datasets', $m, 'Reason')"
+                $reason = if ($context.StatusReason.ContainsKey($m)) { $context.StatusReason[$m] } else { "$(Get-Value $Snapshot 'Datasets', $m, 'Reason')" }
                 if ($reason.Length -gt 200) { $reason = $reason.Substring(0, 200) + '...' }
                 if ($reason) { "$m was not collected ($state): $reason" } else { "$m was not collected ($state)." }
             }
@@ -1299,7 +1507,10 @@ function Read-Snapshot {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Snapshot not found: $Path" }
     $snapshot = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path).Path, [Text.Encoding]::UTF8) | ConvertFrom-Json
     $schema = Get-Value $snapshot 'SchemaVersion'
-    if ($schema -ne $SnapshotSchemaVersion) { throw "Snapshot $Path has schema version '$schema'; this version reads $SnapshotSchemaVersion." }
+    # Each schema only adds datasets, so an older snapshot still reads: the
+    # checks that need what it lacks are Skipped.
+    if ($schema -isnot [int] -and $schema -isnot [long]) { throw "Snapshot $Path has no schema version." }
+    if ($schema -lt 1 -or $schema -gt $SnapshotSchemaVersion) { throw "Snapshot $Path has schema version $schema; this version reads 1 to $SnapshotSchemaVersion." }
     if ($null -eq (Get-Value $snapshot 'Datasets')) { throw "Snapshot $Path has no Datasets." }
     return $snapshot
 }

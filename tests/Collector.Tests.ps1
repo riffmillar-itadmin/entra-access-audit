@@ -44,8 +44,14 @@ BeforeAll {
             "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime&`$top=999" =
             ConvertTo-Page @([pscustomobject]@{ id = 'u1' }, [pscustomobject]@{ id = 'u2' }, [pscustomobject]@{ id = 'u3' })
             '/v1.0/roleManagement/directory/roleDefinitions' = ConvertTo-Page @([pscustomobject]@{ id = $GlobalAdminRoleId; displayName = 'Global Administrator' })
-            '/v1.0/roleManagement/directory/roleAssignments?$expand=principal' = ConvertTo-Page @([pscustomobject]@{ id = 'ra1'; principalId = 'u1'; roleDefinitionId = $GlobalAdminRoleId; principal = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1' } })
-            '/v1.0/roleManagement/directory/roleAssignments' = ConvertTo-Page @([pscustomobject]@{ id = 'ra1'; principalId = 'u1'; roleDefinitionId = $GlobalAdminRoleId })
+            '/v1.0/roleManagement/directory/roleAssignments?$expand=principal' = ConvertTo-Page @(
+                [pscustomobject]@{ id = 'ra1'; principalId = 'u1'; roleDefinitionId = $GlobalAdminRoleId; principal = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1' } }
+                [pscustomobject]@{ id = 'ra2'; principalId = 'g1'; roleDefinitionId = $GlobalAdminRoleId; principal = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'Westmark Admins' } })
+            '/v1.0/roleManagement/directory/roleAssignments' = ConvertTo-Page @(
+                [pscustomobject]@{ id = 'ra1'; principalId = 'u1'; roleDefinitionId = $GlobalAdminRoleId }
+                [pscustomobject]@{ id = 'ra2'; principalId = 'g1'; roleDefinitionId = $GlobalAdminRoleId })
+            '/v1.0/groups/g1/transitiveMembers?$select=id,displayName,userPrincipalName&$top=999' = ConvertTo-Page @(
+                [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u2'; displayName = 'B'; userPrincipalName = 'b@westmark.example' })
             '/v1.0/roleManagement/directory/roleAssignmentSchedules' = ConvertTo-Page @()
             '/v1.0/roleManagement/directory/roleEligibilitySchedules?$expand=principal' = ConvertTo-Page @()
             '/v1.0/reports/authenticationMethods/userRegistrationDetails' = ConvertTo-Page @([pscustomobject]@{ id = 'u1'; isMfaRegistered = $true; methodsRegistered = @('fido2SecurityKey') })
@@ -55,6 +61,10 @@ BeforeAll {
             '/v1.0/servicePrincipals/graph-sp/appRoleAssignedTo?$top=999' = ConvertTo-Page @(
                 [pscustomobject]@{ principalId = 'sp1'; principalDisplayName = 'Westmark Sync'; principalType = 'ServicePrincipal'; appRoleId = 'r1'; createdDateTime = '2026-01-01T00:00:00Z' }
                 [pscustomobject]@{ principalId = 'sp2'; principalDisplayName = 'Westmark Old'; principalType = 'ServicePrincipal'; appRoleId = 'gone'; createdDateTime = '2026-01-01T00:00:00Z' })
+            '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType&$top=999' = ConvertTo-Page @(
+                [pscustomobject]@{ id = 'graph-sp'; appId = '00000003-0000-0000-c000-000000000000'; displayName = 'Microsoft Graph' }
+                [pscustomobject]@{ id = 'sp1'; appId = 'a1'; displayName = 'Westmark Sync' })
+            '/v1.0/oauth2PermissionGrants' = ConvertTo-Page @([pscustomobject]@{ id = 'pg1'; clientId = 'sp1'; consentType = 'AllPrincipals'; principalId = $null; resourceId = 'graph-sp'; scope = 'User.Read Mail.Send' })
             '/v1.0/identity/conditionalAccess/policies' = ConvertTo-Page @([pscustomobject]@{ id = 'p1'; displayName = 'Policy'; state = 'enabled' })
             '/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' = [pscustomobject]@{ id = 'sd'; isEnabled = $false }
         }
@@ -133,7 +143,39 @@ Describe 'Get-TenantSnapshot' {
         $s = Get-Collected
         $s.Datasets.RoleAssignments.Status | Should -Be 'Collected'
         $s.Datasets.RoleAssignments.Reason | Should -Match '^Read without principal details'
-        @($s.Datasets.RoleAssignments.Items).Count | Should -Be 1
+        @($s.Datasets.RoleAssignments.Items).Count | Should -Be 2
+    }
+
+    It 'reads the members of each group that holds a role' {
+        $s = Get-Collected
+        $s.Datasets.RoleGroupMembers.Status | Should -Be 'Collected'
+        @($s.Datasets.RoleGroupMembers.Items).Count | Should -Be 1
+        $s.Datasets.RoleGroupMembers.Items[0].displayName | Should -Be 'Westmark Admins'
+        , $s.Datasets.RoleGroupMembers.Items[0].members | Should -BeOfType [object[]]
+        @($s.Datasets.RoleGroupMembers.Items[0].members | ForEach-Object userPrincipalName) | Should -Be @('b@westmark.example')
+    }
+
+    It 'marks role group members Denied when GroupMember.Read.All was not granted, and carries on' {
+        $Fail['/v1.0/groups/g1/transitiveMembers?$select=id,displayName,userPrincipalName&$top=999'] = $Denied
+        $s = Get-Collected
+        $s.Datasets.RoleGroupMembers.Status | Should -Be 'Denied'
+        @($s.Datasets.RoleGroupMembers.Items).Count | Should -Be 0
+        $s.Datasets.RoleAssignments.Status | Should -Be 'Collected'
+    }
+
+    It 'does not read group members when the roles were read without principal details' {
+        $Fail['/v1.0/roleManagement/directory/roleAssignments?$expand=principal'] = $BadRequest
+        $s = Get-Collected
+        $s.Datasets.RoleGroupMembers.Status | Should -Be 'NotCollected'
+        $s.Datasets.RoleGroupMembers.Reason | Should -Match "can't be told apart"
+        @($Calls | Where-Object { $_ -like '/v1.0/groups/*' }).Count | Should -Be 0
+    }
+
+    It 'marks delegated grants Denied when DelegatedPermissionGrant.Read.All was not granted' {
+        $Fail['/v1.0/oauth2PermissionGrants'] = $Denied
+        $s = Get-Collected
+        $s.Datasets.DelegatedPermissionGrants.Status | Should -Be 'Denied'
+        $s.Datasets.ServicePrincipals.Status | Should -Be 'Collected'
     }
 
     It 'does not retry role assignments without expansion when the read was denied' {

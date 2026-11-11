@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 1,
-  "ToolVersion": "0.1.0",
+  "SchemaVersion": 2,
+  "ToolVersion": "0.2.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -423,6 +423,30 @@
         }
       ]
     },
+    "RoleGroupMembers": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "groupId": "00000000-0000-4000-8000-000000000101",
+          "displayName": "Helpdesk Tier 2",
+          "members": [
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000007",
+              "displayName": "Jo Park",
+              "userPrincipalName": "jo.park@westmark.example"
+            },
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000014",
+              "displayName": "Riley Ng",
+              "userPrincipalName": "riley.ng@westmark.example"
+            }
+          ]
+        }
+      ]
+    },
     "Registration": {
       "Status": "Collected",
       "Reason": "",
@@ -648,6 +672,88 @@
           "appRoleId": "00000000-0000-4000-8000-000000000503",
           "permission": "Files.ReadWrite.All",
           "createdDateTime": "2025-04-01T00:00:00Z"
+        }
+      ]
+    },
+    "ServicePrincipals": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "id": "00000000-0000-4000-8000-000000000601",
+          "appId": "00000003-0000-0000-c000-000000000000",
+          "displayName": "Microsoft Graph",
+          "servicePrincipalType": "Application"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000602",
+          "appId": "00000000-0000-4000-8000-000000000702",
+          "displayName": "Westmark Mail Assistant",
+          "servicePrincipalType": "Application"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000603",
+          "appId": "00000000-0000-4000-8000-000000000303",
+          "displayName": "Westmark Intranet",
+          "servicePrincipalType": "Application"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000604",
+          "appId": "00000000-0000-4000-8000-000000000704",
+          "displayName": "Pocket Files Sync",
+          "servicePrincipalType": "Application"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000605",
+          "appId": "00000000-0000-4000-8000-000000000705",
+          "displayName": "Westmark Records API",
+          "servicePrincipalType": "Application"
+        }
+      ]
+    },
+    "DelegatedPermissionGrants": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "id": "pg-01",
+          "clientId": "00000000-0000-4000-8000-000000000602",
+          "consentType": "AllPrincipals",
+          "principalId": null,
+          "resourceId": "00000000-0000-4000-8000-000000000601",
+          "scope": "User.Read Mail.ReadWrite Mail.Send offline_access"
+        },
+        {
+          "id": "pg-02",
+          "clientId": "00000000-0000-4000-8000-000000000603",
+          "consentType": "AllPrincipals",
+          "principalId": null,
+          "resourceId": "00000000-0000-4000-8000-000000000601",
+          "scope": "openid profile User.Read"
+        },
+        {
+          "id": "pg-03",
+          "clientId": "00000000-0000-4000-8000-000000000604",
+          "consentType": "Principal",
+          "principalId": "00000000-0000-4000-8000-000000000007",
+          "resourceId": "00000000-0000-4000-8000-000000000601",
+          "scope": "Files.ReadWrite.All offline_access"
+        },
+        {
+          "id": "pg-04",
+          "clientId": "00000000-0000-4000-8000-000000000604",
+          "consentType": "Principal",
+          "principalId": "00000000-0000-4000-8000-000000000014",
+          "resourceId": "00000000-0000-4000-8000-000000000601",
+          "scope": "User.Read Files.ReadWrite.All"
+        },
+        {
+          "id": "pg-05",
+          "clientId": "00000000-0000-4000-8000-000000000603",
+          "consentType": "AllPrincipals",
+          "principalId": null,
+          "resourceId": "00000000-0000-4000-8000-000000000605",
+          "scope": "Files.ReadWrite.All"
         }
       ]
     },

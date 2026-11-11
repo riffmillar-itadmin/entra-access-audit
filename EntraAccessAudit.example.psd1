@@ -33,14 +33,17 @@
     )
 
     # Apps whose high-risk permissions you have reviewed and accept, by display
-    # name or service principal object ID (APP-04). They are counted, not listed.
+    # name, service principal object ID or, for delegated permissions, app ID
+    # (APP-04, APP-06, APP-07). They are counted, not listed.
     AcceptedApps          = @(
         # 'Westmark Backup'
     )
 
-    # Microsoft Graph application permissions that APP-04 reports. Each lets an
-    # app take over the tenant or read or change data across it with no user
-    # signed in. Setting this replaces the whole list.
+    # Microsoft Graph permissions treated as high-risk. APP-04 reports them as
+    # application permissions, where an app can use them across the tenant
+    # with no user signed in; APP-06 and APP-07 report them as delegated
+    # permissions, where an app can use them as any user who signs in to it.
+    # Setting this replaces the whole list.
     HighRiskPermissions   = @(
         'RoleManagement.ReadWrite.Directory'
         'AppRoleAssignment.ReadWrite.All'
