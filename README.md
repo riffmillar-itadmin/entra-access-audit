@@ -1,0 +1,257 @@
+# Entra access audit
+
+A read-only PowerShell audit of who can get into a Microsoft Entra ID tenant,
+and how. It reads the tenant through Microsoft Graph and reports on five areas:
+
+- **Privileged roles:** how many Global Administrators there are, standing
+  assignments outside PIM, guests and on-premises synced accounts in admin
+  roles, and admins without phishing-resistant MFA.
+- **Stale accounts:** enabled members and guests that haven't signed in for 90
+  days, accounts that never signed in, and guest invitations nobody accepted.
+- **MFA coverage:** members with no MFA registered, accounts that rely on SMS or
+  voice alone, and admins without MFA.
+- **Apps:** client secrets and certificates that have expired or are about to,
+  long-lived secrets, high-risk Microsoft Graph application permissions, and
+  app registrations with no owner.
+- **Conditional Access:** whether MFA is required for everyone and for admins,
+  whether legacy authentication is blocked, policies left in report-only mode,
+  and who is excluded from them.
+
+It writes an HTML report, a CSV with one row per finding, and a JSON file. It
+runs on Windows PowerShell 5.1 and PowerShell 7, needs only the
+`Microsoft.Graph.Authentication` module, and changes nothing in the tenant.
+
+## Getting started
+
+1. Install the Graph authentication module, once:
+
+   ```powershell
+   Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+   ```
+
+2. Download this repository (Code, Download ZIP) and unblock the files, so
+   Windows doesn't stop them as downloaded scripts:
+
+   ```powershell
+   Get-ChildItem -Recurse | Unblock-File
+   ```
+
+3. Run it. A browser window asks you to sign in and to consent to the
+   read-only scopes:
+
+   ```powershell
+   .\Invoke-EntraAccessAudit.ps1
+   ```
+
+The reports go to a `Reports` folder in the current folder. To see what a
+report looks like without a tenant, run it on the fictional tenant the tests
+use:
+
+```powershell
+.\Invoke-EntraAccessAudit.ps1 -FromSnapshot .\tests\fixtures\westmark.snapshot.json -ProfilePath .\tests\fixtures\westmark.psd1
+```
+
+## What it changes
+
+Nothing in the tenant. Every request to Microsoft Graph is a GET, sent through
+one function, and the tests fail if the script gains another kind of request,
+a Graph cmdlet that changes anything, or a scope that isn't read-only. It
+writes only its report files, and a snapshot when you ask for one.
+
+## Permissions
+
+| Scope | What it reads |
+| --- | --- |
+| `User.Read.All` | Users and guests, enabled state, creation date, on-premises sync, invitation state |
+| `AuditLog.Read.All` | Sign-in activity, and the MFA registration report |
+| `RoleManagement.Read.Directory` | Directory role definitions, assignments, PIM eligibility and schedules |
+| `Application.Read.All` | App registrations, their secrets, certificates and owners, and Graph permissions granted to apps |
+| `Policy.Read.All` | Conditional Access policies and security defaults |
+
+These are delegated scopes, and the account that signs in also needs a role
+that can read this data. **Global Reader** is enough, and is the least
+privileged role that covers all of it. An admin may need to consent to the
+scopes the first time.
+
+## Licences
+
+Some of this data needs a premium licence:
+
+| Data | Needs | Checks that use it |
+| --- | --- | --- |
+| Sign-in activity | Microsoft Entra ID P1 | STALE-01, STALE-02, STALE-03 |
+| MFA registration report | Microsoft Entra ID P1 | ROLE-05, MFA-01, MFA-02, MFA-03 |
+| Conditional Access policies | Microsoft Entra ID P1 | CA-01 to CA-05 |
+| PIM eligibility and schedules | Microsoft Entra ID P2 | ROLE-01, ROLE-02 (see below) |
+
+When the tenant hasn't got the licence, those checks are **Skipped**, and the
+report says why. Two cases are different:
+
+- Without PIM (P2), ROLE-01 counts active Global Administrators only, and
+  ROLE-02 counts every active assignment as standing. Both say so.
+- Without Conditional Access (no P1) and with security defaults off, CA-01 to
+  CA-03 **fail**: nothing in the tenant requires MFA or blocks legacy
+  authentication. With security defaults on, they pass.
+
+## Checks
+
+| Id | Area | Severity | Title | Reports |
+| --- | --- | --- | --- | --- |
+| ROLE-01 | Privileged roles | High | Number of Global Administrators | Fail above `MaxGlobalAdmins` (4); Warn below `MinGlobalAdmins` (2). Active and PIM-eligible holders count, break-glass included. |
+| ROLE-02 | Privileged roles | High | Standing Global Administrator assignments | Fail for a permanently active Global Administrator that isn't a break-glass account. |
+| ROLE-03 | Privileged roles | High | Guests in privileged roles | Fail for a guest holding a privileged role. |
+| ROLE-04 | Privileged roles | Medium | Accounts synced from on-premises in privileged roles | Fail for a synced account holding a privileged role. |
+| ROLE-05 | Privileged roles | Medium | Privileged accounts without phishing-resistant MFA | Fail for a privileged account with no passkey, security key, Windows Hello or certificate registered. |
+| ROLE-06 | Privileged roles | Low | Privileged roles held by groups and service principals | Warn for each, so you can review who controls them. |
+| STALE-01 | Stale accounts | Medium | Enabled members with no recent sign-in | Fail for an enabled member whose last sign-in is older than `StaleDays` (90). |
+| STALE-02 | Stale accounts | Low | Enabled members that never signed in | Fail for an enabled member older than `StaleDays` with no sign-in. |
+| STALE-03 | Stale accounts | Medium | Enabled guests with no recent sign-in | Fail for an enabled guest with no sign-in in `StaleDays`. |
+| STALE-04 | Stale accounts | Low | Guest invitations never accepted | Warn for an invitation pending longer than `StaleDays`. |
+| MFA-01 | MFA coverage | High | Enabled members without MFA registered | Fail for an enabled member with no MFA method registered. |
+| MFA-02 | MFA coverage | Medium | Users whose only MFA is a phone call or text | Warn for an enabled account whose only second factor is a phone. |
+| MFA-03 | MFA coverage | High | Privileged accounts without MFA registered | Fail for a privileged account with no MFA method registered. |
+| APP-01 | Apps | Low | Expired app secrets and certificates | Warn for an expired credential still on an app registration. |
+| APP-02 | Apps | Medium | App secrets and certificates about to expire | Warn for a credential expiring within `CredentialExpiryDays` (30). |
+| APP-03 | Apps | Low | Long-lived client secrets | Warn for a current secret valid longer than `MaxSecretLifetimeDays` (365). |
+| APP-04 | Apps | High | High-risk Microsoft Graph application permissions | Fail for an app granted a permission in `HighRiskPermissions`, unless it is in `AcceptedApps`. |
+| APP-05 | Apps | Low | App registrations without an owner | Warn for an app registration with no owner. |
+| CA-01 | Conditional Access | High | MFA required for all users | Fail unless security defaults are on, or an enabled policy requires MFA or an authentication strength for all users on all apps. |
+| CA-02 | Conditional Access | High | MFA required for administrators | Fail unless security defaults are on, or an enabled policy requires MFA for all users or for Global Administrators on all apps. |
+| CA-03 | Conditional Access | High | Legacy authentication blocked | Fail unless security defaults are on, or an enabled policy blocks Exchange ActiveSync and other clients for all users. |
+| CA-04 | Conditional Access | Low | Policies left in report-only mode | Warn for each report-only policy. |
+| CA-05 | Conditional Access | Medium | Exclusions from enabled policies | Warn for excluded accounts that aren't break-glass, and for excluded groups and roles. |
+
+Privileged roles are Global Administrator and the other built-in roles that
+can take over the tenant or its security, such as Privileged Role
+Administrator, Security Administrator and User Administrator, plus any role
+Graph marks privileged. The full list is `$PrivilegedRoles` in the script.
+
+A role assigned to a group is reported by ROLE-06; its members aren't listed,
+because reading group membership would need another scope.
+
+## Usage
+
+```powershell
+# Audit the tenant and keep the snapshot, to evaluate again later
+.\Invoke-EntraAccessAudit.ps1 -SnapshotPath .\tenant.snapshot.json
+
+# Evaluate a saved snapshot, on any machine, with no sign-in
+.\Invoke-EntraAccessAudit.ps1 -FromSnapshot .\tenant.snapshot.json
+
+# Reports somewhere else, and your own thresholds
+.\Invoke-EntraAccessAudit.ps1 -OutputPath D:\Audits -ProfilePath .\EntraAccessAudit.local.psd1
+```
+
+### Unattended runs
+
+For a scheduled audit, sign in as an app instead of a person. Register an app
+in the tenant, grant it the five permissions above as **Application**
+permissions with admin consent, add a certificate to it, and run:
+
+```powershell
+.\Invoke-EntraAccessAudit.ps1 -TenantId <tenant ID> -ClientId <app ID> -CertificateThumbprint <thumbprint>
+```
+
+The certificate must be in the current user's or the local machine's
+certificate store.
+
+## Thresholds
+
+Copy `EntraAccessAudit.example.psd1` to `EntraAccessAudit.local.psd1` beside the
+script (git ignores it) and change what you need; the script uses it when it is
+there, or the file named by `-ProfilePath`. The example documents each setting:
+
+| Setting | Default | Used by |
+| --- | --- | --- |
+| `StaleDays` | 90 | STALE-01 to STALE-04 |
+| `CredentialExpiryDays` | 30 | APP-02 |
+| `MaxSecretLifetimeDays` | 365 | APP-03 |
+| `MinGlobalAdmins`, `MaxGlobalAdmins` | 2, 4 | ROLE-01 |
+| `BreakGlassAccounts` | none | ROLE-02, STALE-01, STALE-02, CA-05 leave them out |
+| `AcceptedApps` | none | APP-04 counts their grants but doesn't list them |
+| `HighRiskPermissions` | 16 permissions | APP-04 |
+
+Name your emergency access (break-glass) accounts in `BreakGlassAccounts`.
+They are meant to hold Global Administrator permanently, stay out of
+Conditional Access and sign in rarely, so without this they show up as
+findings. They still count toward ROLE-01 and still need MFA.
+
+A setting the script doesn't know stops the run, so a misspelt one can't be
+silently ignored.
+
+## Results
+
+| Result | Meaning |
+| --- | --- |
+| Fail | The data was collected, and it shows a gap. |
+| Warn | The data was collected, and it shows something to review. |
+| Pass | The data was collected, and it shows no gap. |
+| Skipped | The data the check needs wasn't collected. The reason says why, usually a licence. |
+| Error | The check itself failed. The message is in the report. |
+
+Nothing passes by default: a check whose data is missing is Skipped and
+counted, never passed. Dates are judged against the time the snapshot was
+collected, so evaluating an old snapshot gives the same results it did then.
+
+Exit codes: **0** no Fail and no Error; **1** at least one Fail; **2** at least
+one Error, a dataset that couldn't be read for a reason other than licensing
+(such as a missing scope), or the audit couldn't start.
+
+## Reports
+
+Each run writes three files, named by collection time (UTC):
+
+| File | Contents |
+| --- | --- |
+| `entra-access-audit-<time>.html` | A self-contained page: counts, every check by area with its findings, the data collected and the thresholds. No scripts, light and dark themes. |
+| `entra-access-audit-<time>.csv` | One row per finding, with the check, its result and severity. A check with no findings has one row. |
+| `entra-access-audit-<time>.json` | Counts, each dataset's status, the thresholds and every result. |
+
+The reports name real accounts, guests and apps. Keep them somewhere private.
+
+## Compatibility
+
+- Windows PowerShell 5.1 and PowerShell 7. The tests run on both.
+- `Microsoft.Graph.Authentication` 2.x for a live audit. Evaluating a snapshot
+  needs no module and runs on any operating system.
+- Microsoft Graph v1.0 endpoints only.
+
+## Testing
+
+```powershell
+.\Test-EntraAccessAudit.ps1 -BothEditions
+.\Test-EntraAccessAuditLint.ps1 -BothEditions
+```
+
+The suite needs no tenant and no network. Every check runs against the
+fictional Westmark tenant in `tests/fixtures`, with a Fail or Warn case, a Pass
+case and a Skipped case each; the collector runs against a fake Microsoft
+Graph that pages, refuses licences and denies scopes. It ends with a table of
+what was tested on each edition and the pass, fail, skip and not-run counts.
+A skipped or unrun test fails the run. The lint script ends with a table too:
+files linted, findings and blocking findings on each edition.
+
+Pester 6.2.0 and PSScriptAnalyzer 1.25.0 are pinned, and installed for the
+current user if missing: from the PowerShell Gallery, then from a second
+download site checked against a pinned SHA-256, then from `-PackagePath`.
+
+## How this is built
+
+I build this tool with Claude Code as a pair programmer, under the rules in
+[`CLAUDE.md`](CLAUDE.md), and I review every change before it is committed. The
+Pester suite runs on Windows PowerShell 5.1 and PowerShell 7, and CI runs it and
+PSScriptAnalyzer lint on both editions on every pull request and every push to
+`main`. Every release is a signed tag. The audit is read-only (see
+[What it changes](#what-it-changes)), and no model runs during an audit: each
+result comes from data read from Microsoft Graph. The AI writes drafts; the
+tests and I decide what ships.
+
+## Changelog
+
+| Version | Date | Changes |
+| --- | --- | --- |
+| 0.1.0 | 2026-11-10 | First release. Read-only audit on Microsoft Graph with 23 checks across privileged roles, stale accounts, MFA coverage, apps and Conditional Access; HTML, CSV and JSON reports; snapshots evaluated offline with `-FromSnapshot`; app-only sign-in with a certificate; thresholds and break-glass accounts in a local profile. Pester suite on a fictional tenant and a fake Graph, on 5.1 and 7. |
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

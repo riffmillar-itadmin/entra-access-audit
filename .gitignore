@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+#  Reports and snapshots name real accounts, guests and apps. Keep them out.
+# ---------------------------------------------------------------------------
+Reports/
+entra-access-audit-*
+*.snapshot.json
+#  ...except the fictional Westmark tenant the tests use.
+!tests/fixtures/*.snapshot.json
+
+#  Your own thresholds and break-glass accounts. Wildcards, so a copy
+#  ("EntraAccessAudit.local - Copy.psd1") is covered too; the shipped example
+#  is a different name and stays tracked.
+EntraAccessAudit.local*.psd1
+
+#  Personal copies of instructions, such as CLAUDE.local.md.
+*.local*.md
+
+# ---- editor and OS scratch ----
+*.bak
+*.tmp
+*~
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
