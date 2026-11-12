@@ -70,6 +70,7 @@ Describe 'The Westmark fixture as it is' {
             'STALE-01' = 'Fail'; 'STALE-02' = 'Fail'; 'STALE-03' = 'Fail'; 'STALE-04' = 'Warn'
             'MFA-01' = 'Fail'; 'MFA-02' = 'Warn'; 'MFA-03' = 'Fail'
             'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
+            'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
@@ -525,6 +526,123 @@ Describe 'Apps' {
         $r = Get-Result $s
         foreach ($id in 'APP-01', 'APP-02', 'APP-03', 'APP-05') { $r[$id].Status | Should -Be 'Skipped' -Because $id }
         $r['APP-04'].Status | Should -Be 'Fail'
+    }
+}
+
+Describe 'Service accounts' {
+    It 'SVC-01 warns on a secret added to an enterprise app, leaving out SAML signing, managed identity and expired certificates' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['SVC-01']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Westmark Mail Assistant')
+        $r.Findings[0].Detail | Should -Be "Secret 'sync', valid to 2028-08-01"
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Mail Assistant').passwordCredentials = @()
+        (Get-Result $s)['SVC-01'].Status | Should -Be 'Pass'
+    }
+
+    It 'SVC-01 reports a Verify certificate that is not paired with a signing key' {
+        $s = Get-Fixture
+        $sp = Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Intranet'
+        $sp.keyCredentials = @($sp.keyCredentials | Where-Object usage -eq 'Verify')
+        Get-Subject (Get-Result $s)['SVC-01'] | Should -Contain 'Westmark Intranet'
+    }
+
+    It 'SVC-01 counts, but does not list, apps named in AcceptedApps' {
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.AcceptedApps = @('00000000-0000-4000-8000-000000000702')
+        $r = (Get-Result (Get-Fixture) $p)['SVC-01']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 credential\(s\) on apps listed in AcceptedApps'
+    }
+
+    It 'SVC-01, SVC-03 and SVC-04 are skipped on a snapshot from before service principal details, not passed' {
+        # Older snapshots have service principals without credentials, owner or state.
+        $s = Get-Fixture
+        $s.SchemaVersion = 2
+        $r = Get-Result $s
+        foreach ($id in 'SVC-01', 'SVC-03', 'SVC-04') {
+            $r[$id].Status | Should -Be 'Skipped' -Because $id
+            $r[$id].Summary | Should -Match 'ServicePrincipalDetails was not collected \(NotCollected\): The snapshot has schema 2' -Because $id
+        }
+        $r['SVC-02'].Status | Should -Be 'Fail'
+    }
+
+    It 'SVC-01, SVC-03 and SVC-04 are skipped when the service principals could not be read' {
+        $s = Get-Fixture; Set-NotCollected $s 'ServicePrincipals' 'Denied'
+        $r = Get-Result $s
+        foreach ($id in 'SVC-01', 'SVC-03', 'SVC-04') { $r[$id].Status | Should -Be 'Skipped' -Because $id }
+    }
+
+    It 'SVC-02 fails on an app in a privileged role, including through a group, and passes without one' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['SVC-02']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('Westmark Provisioning')
+        $r.Findings[0].Detail | Should -Be 'User Administrator (Active)'
+        (Get-FixtureItem $s 'RoleGroupMembers' 'groupId' '00000000-0000-4000-8000-000000000101').members += [pscustomobject]@{
+            '@odata.type' = '#microsoft.graph.servicePrincipal'; id = '00000000-0000-4000-8000-000000000606'; displayName = 'Westmark HR Sync' }
+        $r = (Get-Result $s)['SVC-02']
+        @($r.Findings | Where-Object Subject -eq 'Westmark HR Sync')[0].Detail | Should -Be 'Helpdesk Administrator via Helpdesk Tier 2 (Active)'
+        Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-07'
+        (Get-FixtureItem $s 'RoleGroupMembers' 'groupId' '00000000-0000-4000-8000-000000000101').members = @(
+            (Get-FixtureItem $s 'RoleGroupMembers' 'groupId' '00000000-0000-4000-8000-000000000101').members | Where-Object id -ne '00000000-0000-4000-8000-000000000606')
+        (Get-Result $s)['SVC-02'].Status | Should -Be 'Pass'
+    }
+
+    It 'SVC-02 counts, but does not list, apps named in AcceptedApps, and is skipped without role assignments' {
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.AcceptedApps = @('Westmark Provisioning')
+        $r = (Get-Result (Get-Fixture) $p)['SVC-02']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 app\(s\) listed in AcceptedApps'
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAssignments' 'Error'
+        (Get-Result $s)['SVC-02'].Status | Should -Be 'Skipped'
+    }
+
+    It 'SVC-03 fails on an app from another organization with a high-risk permission, and passes once it is this tenant''s or Microsoft''s' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['SVC-03']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('Westmark Backup')
+        $r.Findings[0].Detail | Should -Be 'Files.ReadWrite.All (application); published by tenant 00000000-0000-4000-8000-000000000888'
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Backup').appOwnerOrganizationId = 'f8cdef31-a31e-4b4a-93e4-5f571e91255a'
+        (Get-Result $s)['SVC-03'].Status | Should -Be 'Pass'
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Backup').appOwnerOrganizationId = '00000000-0000-4000-8000-000000000999'
+        (Get-Result $s)['SVC-03'].Status | Should -Be 'Pass'
+    }
+
+    It 'SVC-03 counts tenant-wide delegated consent, but not one user''s' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Mail Assistant').appOwnerOrganizationId = '00000000-0000-4000-8000-000000000888'
+        $r = (Get-Result $s)['SVC-03']
+        Get-Subject $r | Should -Be @('Westmark Backup', 'Westmark Mail Assistant')
+        @($r.Findings | Where-Object Subject -eq 'Westmark Mail Assistant')[0].Detail | Should -Match '^Mail\.ReadWrite \(delegated, every user\), Mail\.Send \(delegated, every user\);'
+        # Pocket Files Sync is from another organization too, but only two users consented.
+        Get-Subject $r | Should -Not -Contain 'Pocket Files Sync'
+    }
+
+    It 'SVC-03 is skipped when the snapshot has no tenant ID' {
+        $s = Get-Fixture; $s.TenantId = ''
+        $r = (Get-Result $s)['SVC-03']
+        $r.Status | Should -Be 'Skipped'
+        $r.Summary | Should -Match "doesn't record the tenant's ID"
+    }
+
+    It 'SVC-04 warns on a disabled app that still holds a permission, and passes once it holds none' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['SVC-04']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Old Reporting Connector')
+        $r.Findings[0].Detail | Should -Be 'Disabled, still holds: Reports.Read.All (application)'
+        Remove-FixtureItem $s 'GraphPermissionGrants' 'principalDisplayName' 'Old Reporting Connector'
+        (Get-Result $s)['SVC-04'].Status | Should -Be 'Pass'
+    }
+
+    It 'SVC-04 counts a role and a delegated grant held by a disabled app' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Provisioning').accountEnabled = $false
+        (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Intranet').accountEnabled = $false
+        $r = (Get-Result $s)['SVC-04']
+        @($r.Findings | Where-Object Subject -eq 'Westmark Provisioning')[0].Detail | Should -Be 'Disabled, still holds: User Administrator'
+        @($r.Findings | Where-Object Subject -eq 'Westmark Intranet')[0].Detail | Should -Match 'delegated: openid profile User\.Read'
     }
 }
 

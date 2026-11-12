@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 2,
-  "ToolVersion": "0.2.0",
+  "SchemaVersion": 3,
+  "ToolVersion": "0.3.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -650,7 +650,7 @@
       "Reason": "",
       "Items": [
         {
-          "principalId": "00000000-0000-4000-8000-000000000001",
+          "principalId": "00000000-0000-4000-8000-000000000606",
           "principalDisplayName": "Westmark HR Sync",
           "principalType": "ServicePrincipal",
           "appRoleId": "00000000-0000-4000-8000-000000000501",
@@ -658,7 +658,7 @@
           "createdDateTime": "2024-02-02T00:00:00Z"
         },
         {
-          "principalId": "00000000-0000-4000-8000-000000000002",
+          "principalId": "00000000-0000-4000-8000-000000000603",
           "principalDisplayName": "Westmark Intranet",
           "principalType": "ServicePrincipal",
           "appRoleId": "00000000-0000-4000-8000-000000000502",
@@ -666,12 +666,20 @@
           "createdDateTime": "2026-06-02T00:00:00Z"
         },
         {
-          "principalId": "00000000-0000-4000-8000-000000000003",
+          "principalId": "00000000-0000-4000-8000-000000000607",
           "principalDisplayName": "Westmark Backup",
           "principalType": "ServicePrincipal",
           "appRoleId": "00000000-0000-4000-8000-000000000503",
           "permission": "Files.ReadWrite.All",
           "createdDateTime": "2025-04-01T00:00:00Z"
+        },
+        {
+          "principalId": "00000000-0000-4000-8000-000000000608",
+          "principalDisplayName": "Old Reporting Connector",
+          "principalType": "ServicePrincipal",
+          "appRoleId": "00000000-0000-4000-8000-000000000504",
+          "permission": "Reports.Read.All",
+          "createdDateTime": "2023-05-01T00:00:00Z"
         }
       ]
     },
@@ -683,31 +691,157 @@
           "id": "00000000-0000-4000-8000-000000000601",
           "appId": "00000003-0000-0000-c000-000000000000",
           "displayName": "Microsoft Graph",
-          "servicePrincipalType": "Application"
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "f8cdef31-a31e-4b4a-93e4-5f571e91255a",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
         },
         {
           "id": "00000000-0000-4000-8000-000000000602",
           "appId": "00000000-0000-4000-8000-000000000702",
           "displayName": "Westmark Mail Assistant",
-          "servicePrincipalType": "Application"
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [
+            {
+              "keyId": "00000000-0000-4000-8000-000000000451",
+              "displayName": "sync",
+              "startDateTime": "2026-08-01T00:00:00Z",
+              "endDateTime": "2028-08-01T00:00:00Z"
+            }
+          ],
+          "keyCredentials": []
         },
         {
           "id": "00000000-0000-4000-8000-000000000603",
           "appId": "00000000-0000-4000-8000-000000000303",
           "displayName": "Westmark Intranet",
-          "servicePrincipalType": "Application"
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": [
+            {
+              "keyId": "00000000-0000-4000-8000-000000000452",
+              "displayName": "CN=Westmark Intranet SSO",
+              "type": "AsymmetricX509Cert",
+              "usage": "Sign",
+              "customKeyIdentifier": "QUJDREVG",
+              "startDateTime": "2025-06-01T00:00:00Z",
+              "endDateTime": "2028-06-01T00:00:00Z"
+            },
+            {
+              "keyId": "00000000-0000-4000-8000-000000000453",
+              "displayName": "CN=Westmark Intranet SSO",
+              "type": "AsymmetricX509Cert",
+              "usage": "Verify",
+              "customKeyIdentifier": "QUJDREVG",
+              "startDateTime": "2025-06-01T00:00:00Z",
+              "endDateTime": "2028-06-01T00:00:00Z"
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000604",
           "appId": "00000000-0000-4000-8000-000000000704",
           "displayName": "Pocket Files Sync",
-          "servicePrincipalType": "Application"
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000888",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
         },
         {
           "id": "00000000-0000-4000-8000-000000000605",
           "appId": "00000000-0000-4000-8000-000000000705",
           "displayName": "Westmark Records API",
-          "servicePrincipalType": "Application"
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000606",
+          "appId": "00000000-0000-4000-8000-000000000301",
+          "displayName": "Westmark HR Sync",
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000607",
+          "appId": "00000000-0000-4000-8000-000000000707",
+          "displayName": "Westmark Backup",
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000888",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": [
+            {
+              "keyId": "00000000-0000-4000-8000-000000000454",
+              "displayName": "CN=backup-agent",
+              "type": "AsymmetricX509Cert",
+              "usage": "Verify",
+              "customKeyIdentifier": "R0hJSktM",
+              "startDateTime": "2025-01-01T00:00:00Z",
+              "endDateTime": "2026-01-01T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000608",
+          "appId": "00000000-0000-4000-8000-000000000708",
+          "displayName": "Old Reporting Connector",
+          "servicePrincipalType": "Application",
+          "accountEnabled": false,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000609",
+          "appId": "00000000-0000-4000-8000-000000000709",
+          "displayName": "westmark-func-identity",
+          "servicePrincipalType": "ManagedIdentity",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": null,
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": [
+            {
+              "keyId": "00000000-0000-4000-8000-000000000455",
+              "displayName": "managed",
+              "type": "AsymmetricX509Cert",
+              "usage": "Verify",
+              "customKeyIdentifier": "TU5PUFFS",
+              "startDateTime": "2026-10-01T00:00:00Z",
+              "endDateTime": "2027-01-01T00:00:00Z"
+            }
+          ]
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000102",
+          "appId": "00000000-0000-4000-8000-000000000710",
+          "displayName": "Westmark Provisioning",
+          "servicePrincipalType": "Application",
+          "accountEnabled": true,
+          "appOwnerOrganizationId": "00000000-0000-4000-8000-000000000999",
+          "createdDateTime": "2024-01-01T00:00:00Z",
+          "passwordCredentials": [],
+          "keyCredentials": []
         }
       ]
     },

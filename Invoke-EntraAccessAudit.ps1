@@ -2,7 +2,7 @@
 .SYNOPSIS
     Audits who can get into a Microsoft Entra ID tenant and how: privileged
     roles, stale and guest accounts, MFA coverage, app credentials and
-    permissions, and Conditional Access gaps. Read-only.
+    permissions, service accounts, and Conditional Access gaps. Read-only.
 
 .DESCRIPTION
     Read-only by design. Every call to Microsoft Graph goes through one function
@@ -44,7 +44,8 @@
         User.Read.All                  users, guests, account state
         AuditLog.Read.All              sign-in activity, MFA registration report
         RoleManagement.Read.Directory  role assignments, PIM eligibility
-        Application.Read.All           app registrations, granted permissions
+        Application.Read.All           app registrations, enterprise apps,
+                                       granted permissions
         Policy.Read.All                Conditional Access, security defaults
         DelegatedPermissionGrant.Read.All
                                        delegated permissions that admins
@@ -110,6 +111,11 @@
                        MFA registration report skips ROLE-05 and MFA-01 to
                        MFA-03 instead of passing them, and accounts with no
                        record make them Warn.
+    0.3.0  2026-11-12  Service accounts area: SVC-01 enterprise app
+                       credentials, SVC-02 apps in privileged roles, SVC-03
+                       apps from other organizations with high-risk
+                       permissions, SVC-04 disabled apps still holding
+                       access. Snapshot schema 3.
 #>
 
 [CmdletBinding()]
@@ -126,8 +132,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.2.0'
-$SnapshotSchemaVersion = 2
+$EntraAccessAuditVersion = '0.3.0'
+$SnapshotSchemaVersion = 3
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -144,6 +150,13 @@ $AuditScopes = @(
 # application permissions. The same appId in every tenant.
 $GraphAppId = '00000003-0000-0000-c000-000000000000'
 $GlobalAdminRoleId = '62e90394-69f5-4237-9190-012177145e10'
+
+# The tenants Microsoft's own apps belong to. An app owned by any other tenant
+# but this one comes from another organization.
+$MicrosoftTenantIds = @(
+    'f8cdef31-a31e-4b4a-93e4-5f571e91255a'   # Microsoft Services
+    '72f988bf-86f1-41af-91ab-2d7cd011db47'   # Microsoft
+)
 
 # Built-in roles treated as privileged, by template ID (the same in every
 # tenant). A role definition that Graph marks isPrivileged counts too.
@@ -420,7 +433,7 @@ function Get-TenantSnapshot {
     Write-Host 'Reading app registrations and permissions...'
     $datasets.Applications = Read-Dataset -Uri '/v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$expand=owners($select=id)&$top=100'
     $datasets.GraphPermissionGrants = Get-GraphPermissionGrant
-    $datasets.ServicePrincipals = Read-Dataset -Uri '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType&$top=999'
+    $datasets.ServicePrincipals = Read-Dataset -Uri '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType,accountEnabled,appOwnerOrganizationId,createdDateTime,passwordCredentials,keyCredentials&$top=999'
     $datasets.DelegatedPermissionGrants = Read-Dataset -Uri '/v1.0/oauth2PermissionGrants'
 
     Write-Host 'Reading Conditional Access and security defaults...'
@@ -603,6 +616,22 @@ function Get-AuditContext {
     foreach ($p in $ds.PSObject.Properties) { $status[$p.Name] = "$(Get-Value $p.Value 'Status')" }
     # Snapshots from 0.1.0 have no group members; say so in the checks.
     if (-not $status.ContainsKey('RoleGroupMembers')) { $status['RoleGroupMembers'] = 'NotCollected' }
+    $statusReason = @{}
+    # Service principal credentials, owner and state arrived in schema 3. In
+    # an older snapshot the service principals have none of them, which must
+    # not read as "no credentials", so the checks that need them are Skipped.
+    $schema = Get-Value $Snapshot 'SchemaVersion'
+    $status['ServicePrincipalDetails'] = $status['ServicePrincipals']
+    if (-not $status['ServicePrincipalDetails']) { $status['ServicePrincipalDetails'] = 'NotCollected' }
+    if ($status['ServicePrincipalDetails'] -eq 'Collected' -and $schema -lt 3) {
+        $status['ServicePrincipalDetails'] = 'NotCollected'
+        $statusReason['ServicePrincipalDetails'] = "The snapshot has schema $schema, from before service principal credentials, owners and state were collected."
+    } elseif ($status['ServicePrincipalDetails'] -ne 'Collected') {
+        $statusReason['ServicePrincipalDetails'] = "$(Get-Value $ds 'ServicePrincipals', 'Reason')"
+    }
+
+    $spsById = @{}
+    foreach ($sp in @(Get-Value $ds 'ServicePrincipals', 'Items')) { if ($null -ne $sp) { $spsById["$(Get-Value $sp 'id')"] = $sp } }
 
     $usersById = @{}
     foreach ($u in @(Get-Value $ds 'Users', 'Items')) { if ($null -ne $u) { $usersById["$(Get-Value $u 'id')"] = $u } }
@@ -677,7 +706,6 @@ function Get-AuditContext {
     # An empty registration report for a tenant with users means Microsoft
     # hasn't filled it yet, not that nobody is registered. Treat it as not
     # collected, so the checks that need it are Skipped, never passed.
-    $statusReason = @{}
     if ($status['Registration'] -eq 'Collected' -and $registration.Count -eq 0 -and $usersById.Count -gt 0) {
         $status['Registration'] = 'Empty'
         $statusReason['Registration'] = "The MFA registration report has no records, though the tenant has $($usersById.Count) user(s). Microsoft fills it in the background, which can take a day in a new tenant."
@@ -698,6 +726,8 @@ function Get-AuditContext {
         RoleGroups    = $roleGroups.ToArray()
         Registration  = $registration
         StatusReason  = $statusReason
+        SpsById       = $spsById
+        TenantId      = "$(Get-Value $Snapshot 'TenantId')"
     }
 }
 
@@ -1173,6 +1203,103 @@ $AuditChecks = @(
         }
     }
     [pscustomobject]@{
+        Id = 'SVC-01'; Area = 'Service accounts'; Severity = 'Medium'
+        Title = 'Secrets and certificates on enterprise apps'
+        Needs = @('ServicePrincipalDetails')
+        Test = {
+            param($Context)
+            $creds = @(Get-SpCredential $Context | Where-Object { $null -eq $_.End -or $_.End -ge $Context.Now })
+            $accepted = @($creds | Where-Object { Test-AcceptedApp $Context $_.Sp })
+            $findings = foreach ($c in @($creds | Where-Object { -not (Test-AcceptedApp $Context $_.Sp) })) {
+                $until = if ($null -ne $c.End) { "valid to $(Format-AuditDate $c.End)" } else { 'no end date' }
+                New-Finding $c.App "$($c.Type) '$($c.Name)', $until"
+            }
+            $findings = @($findings)
+            $note = if ($accepted.Count) { " $($accepted.Count) credential(s) on apps listed in AcceptedApps were not counted." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) secret(s) or certificate(s) let someone sign in as an enterprise app, outside its app registration. Check each was added on purpose.$note" $findings) }
+            return (New-Outcome Pass "No enterprise app has a current secret or certificate of its own, apart from SAML signing certificates.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'SVC-02'; Area = 'Service accounts'; Severity = 'High'
+        Title = 'Service principals in privileged roles'
+        Needs = @('RoleAssignments')
+        Test = {
+            param($Context)
+            $sps = @($Context.Holders | Where-Object PrincipalType -eq 'ServicePrincipal')
+            $accepted = 0
+            $findings = foreach ($id in @($sps | ForEach-Object PrincipalId | Sort-Object -Unique)) {
+                $h = @($sps | Where-Object PrincipalId -eq $id)
+                $sp = $Context.SpsById[$id]
+                if ($null -eq $sp) { $sp = [pscustomobject]@{ id = $id; displayName = $h[0].Name } }
+                if (Test-AcceptedApp $Context $sp) { $accepted++; continue }
+                $roles = @($h | ForEach-Object { "$(Get-HolderRoleText $_) ($($_.Kind))" } | Sort-Object -Unique)
+                New-Finding $h[0].Name ($roles -join ', ')
+            }
+            $findings = @($findings | Sort-Object Subject)
+            $note = if ($accepted) { " $accepted app(s) listed in AcceptedApps were not counted." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) app(s) hold a privileged role. Anyone with the app's credentials holds it too, with no MFA.$note" $findings) }
+            return (New-Outcome Pass "No app holds a privileged role.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'SVC-03'; Area = 'Service accounts'; Severity = 'High'
+        Title = 'Apps from other organizations with high-risk permissions'
+        Needs = @('ServicePrincipalDetails', 'GraphPermissionGrants', 'DelegatedPermissionGrants')
+        Test = {
+            param($Context)
+            if (-not $Context.TenantId) { return (New-Outcome Skipped "The snapshot doesn't record the tenant's ID, so apps from other organizations can't be told apart.") }
+            $risky = @($Context.Profile.HighRiskPermissions)
+            $byApp = [ordered]@{}
+            foreach ($g in @(Get-Value $Context.Snapshot 'Datasets', 'GraphPermissionGrants', 'Items')) {
+                if ($null -eq $g -or $risky -notcontains "$(Get-Value $g 'permission')") { continue }
+                $id = "$(Get-Value $g 'principalId')"
+                if (-not $byApp.Contains($id)) { $byApp[$id] = [Collections.Generic.List[string]]::new() }
+                $byApp[$id].Add("$(Get-Value $g 'permission') (application)")
+            }
+            foreach ($g in @(Get-DelegatedGrant $Context | Where-Object ConsentType -eq 'AllPrincipals')) {
+                if (-not $byApp.Contains($g.ClientId)) { $byApp[$g.ClientId] = [Collections.Generic.List[string]]::new() }
+                foreach ($scope in $g.Scopes) { $byApp[$g.ClientId].Add("$scope (delegated, every user)") }
+            }
+            $accepted = 0
+            $findings = foreach ($id in $byApp.Keys) {
+                $sp = $Context.SpsById[$id]
+                if ($null -eq $sp) { continue }
+                $owner = "$(Get-Value $sp 'appOwnerOrganizationId')"
+                if (-not $owner -or $owner -eq $Context.TenantId -or $MicrosoftTenantIds -contains $owner) { continue }
+                if (Test-AcceptedApp $Context $sp) { $accepted++; continue }
+                New-Finding "$(Get-Value $sp 'displayName')" "$(@($byApp[$id] | Sort-Object -Unique) -join ', '); published by tenant $owner"
+            }
+            $findings = @($findings | Sort-Object Subject)
+            $note = if ($accepted) { " $accepted app(s) listed in AcceptedApps were not counted." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) app(s) published by another organization hold high-risk permissions in this tenant. Whoever controls the app there controls that access here.$note" $findings) }
+            return (New-Outcome Pass "No app from another organization holds a high-risk permission.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'SVC-04'; Area = 'Service accounts'; Severity = 'Low'
+        Title = 'Disabled apps that still hold permissions or roles'
+        Needs = @('ServicePrincipalDetails', 'GraphPermissionGrants', 'DelegatedPermissionGrants', 'RoleAssignments')
+        Test = {
+            param($Context)
+            $findings = foreach ($sp in @($Context.SpsById.Values | Sort-Object { "$(Get-Value $_ 'displayName')" })) {
+                if ((Get-Value $sp 'accountEnabled') -ne $false) { continue }
+                $id = "$(Get-Value $sp 'id')"
+                $held = @(
+                    @(Get-Value $Context.Snapshot 'Datasets', 'GraphPermissionGrants', 'Items' | Where-Object { $null -ne $_ -and "$(Get-Value $_ 'principalId')" -eq $id }) |
+                        ForEach-Object { "$(Get-Value $_ 'permission') (application)" }
+                    @(Get-Value $Context.Snapshot 'Datasets', 'DelegatedPermissionGrants', 'Items' | Where-Object { $null -ne $_ -and "$(Get-Value $_ 'clientId')" -eq $id }) |
+                        ForEach-Object { "delegated: $(Get-Value $_ 'scope')".Trim() }
+                    @($Context.Holders | Where-Object PrincipalId -eq $id) | ForEach-Object { Get-HolderRoleText $_ }
+                )
+                if ($held.Count -gt 0) { New-Finding "$(Get-Value $sp 'displayName')" "Disabled, still holds: $(@($held | Sort-Object -Unique) -join '; ')" }
+            }
+            $findings = @($findings)
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) disabled app(s) still hold permissions or roles. Remove what they no longer need, so turning them back on doesn't restore it." $findings) }
+            return (New-Outcome Pass 'No disabled app holds a permission or role.')
+        }
+    }
+    [pscustomobject]@{
         Id = 'CA-01'; Area = 'Conditional Access'; Severity = 'High'
         Title = 'MFA required for all users'
         Needs = @()
@@ -1294,16 +1421,56 @@ function Get-AppCredential {
     }
 }
 
+function Test-AcceptedApp {
+    # True when a service principal is named in AcceptedApps, by display
+    # name, object ID or app ID.
+    param($Context, $Sp)
+    $accepted = @($Context.Profile.AcceptedApps | ForEach-Object { "$_".ToLowerInvariant() })
+    foreach ($key in "$(Get-Value $Sp 'displayName')", "$(Get-Value $Sp 'id')", "$(Get-Value $Sp 'appId')") {
+        if ($key -and $accepted -contains $key.ToLowerInvariant()) { return $true }
+    }
+    return $false
+}
+
+function Get-SpCredential {
+    # Secrets and certificates on service principals, flattened. Left out:
+    # managed identities, whose certificates Azure rotates itself, and SAML
+    # signing certificates (a Sign key and its paired Verify key), which an
+    # SSO app is meant to have.
+    param($Context)
+    foreach ($sp in @($Context.SpsById.Values | Sort-Object { "$(Get-Value $_ 'displayName')" })) {
+        if ("$(Get-Value $sp 'servicePrincipalType')" -eq 'ManagedIdentity') { continue }
+        $keys = @(Get-Value $sp 'keyCredentials' | Where-Object { $null -ne $_ })
+        $signing = @($keys | Where-Object { "$(Get-Value $_ 'usage')" -eq 'Sign' } | ForEach-Object { "$(Get-Value $_ 'customKeyIdentifier')" } | Where-Object { $_ })
+        $creds = @(
+            foreach ($c in @(Get-Value $sp 'passwordCredentials' | Where-Object { $null -ne $_ })) { , @($c, 'Secret') }
+            foreach ($c in $keys) {
+                if ("$(Get-Value $c 'usage')" -eq 'Sign' -or $signing -contains "$(Get-Value $c 'customKeyIdentifier')") { continue }
+                , @($c, 'Certificate')
+            }
+        )
+        foreach ($pair in $creds) {
+            $c = $pair[0]
+            $name = "$(Get-Value $c 'displayName')"
+            if (-not $name) { $name = "$(Get-Value $c 'keyId')" }
+            [pscustomobject]@{
+                Sp   = $sp
+                App  = "$(Get-Value $sp 'displayName')"
+                Type = $pair[1]
+                Name = $name
+                End  = ConvertTo-UtcDate (Get-Value $c 'endDateTime')
+            }
+        }
+    }
+}
+
 function Get-DelegatedGrant {
     # Delegated permission grants on Microsoft Graph that include a permission
     # in HighRiskPermissions, one row per grant, with the app's name. Grants
     # on other APIs are left out, since their permission names mean
     # something else.
     param($Context)
-    $sps = @{}
-    foreach ($sp in @(Get-Value $Context.Snapshot 'Datasets', 'ServicePrincipals', 'Items')) {
-        if ($null -ne $sp) { $sps["$(Get-Value $sp 'id')"] = $sp }
-    }
+    $sps = $Context.SpsById
     $risky = @($Context.Profile.HighRiskPermissions)
     $accepted = @($Context.Profile.AcceptedApps | ForEach-Object { "$_".ToLowerInvariant() })
     foreach ($g in @(Get-Value $Context.Snapshot 'Datasets', 'DelegatedPermissionGrants', 'Items')) {
@@ -1319,6 +1486,7 @@ function Get-DelegatedGrant {
         $keys = @($name, $clientId, "$(Get-Value $client 'appId')" | ForEach-Object { $_.ToLowerInvariant() })
         [pscustomobject]@{
             App         = $name
+            ClientId    = $clientId
             ConsentType = "$(Get-Value $g 'consentType')"
             PrincipalId = "$(Get-Value $g 'principalId')"
             Scopes      = $high
@@ -1424,7 +1592,8 @@ function ConvertTo-AuditHtml {
     [void]$sb.AppendLine('</div>')
     [void]$sb.AppendLine('<p class="muted">Evidence for a review, not a verdict. Skipped means the data a check needs wasn''t collected; the reason says why.</p>')
 
-    $areaOrder = @('Privileged roles', 'Stale accounts', 'MFA coverage', 'Apps', 'Conditional Access')
+    # Areas in the order the checks run, so a new area can't be left out.
+    $areaOrder = @($AuditChecks | ForEach-Object Area | Select-Object -Unique)
     foreach ($area in $areaOrder) {
         $rows = @($Results | Where-Object Area -eq $area)
         if ($rows.Count -eq 0) { continue }

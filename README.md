@@ -1,7 +1,7 @@
 # Entra access audit
 
 A read-only PowerShell audit of who can get into a Microsoft Entra ID tenant,
-and how. It reads the tenant through Microsoft Graph and reports on five areas:
+and how. It reads the tenant through Microsoft Graph and reports on six areas:
 
 - **Privileged roles:** how many Global Administrators there are, standing
   assignments outside PIM, guests and on-premises synced accounts in admin
@@ -15,6 +15,9 @@ and how. It reads the tenant through Microsoft Graph and reports on five areas:
   long-lived secrets, high-risk Microsoft Graph application permissions, app
   registrations with no owner, and high-risk delegated permissions consented
   for every user or by users themselves.
+- **Service accounts:** secrets and certificates added to enterprise apps, apps
+  in privileged roles, apps from other organizations with high-risk
+  permissions, and disabled apps that still hold access.
 - **Conditional Access:** whether MFA is required for everyone and for admins,
   whether legacy authentication is blocked, policies left in report-only mode,
   and who is excluded from them.
@@ -67,7 +70,7 @@ writes only its report files, and a snapshot when you ask for one.
 | `User.Read.All` | Users and guests, enabled state, creation date, on-premises sync, invitation state |
 | `AuditLog.Read.All` | Sign-in activity, and the MFA registration report |
 | `RoleManagement.Read.Directory` | Directory role definitions, assignments, PIM eligibility and schedules |
-| `Application.Read.All` | App registrations, their secrets, certificates and owners, and Graph permissions granted to apps |
+| `Application.Read.All` | App registrations and enterprise apps (service principals): their secrets, certificates, owners, publisher and state, and Graph permissions granted to apps |
 | `Policy.Read.All` | Conditional Access policies and security defaults |
 | `DelegatedPermissionGrant.Read.All` | Delegated permissions that admins or users consented to for apps |
 | `GroupMember.Read.All` | Members of the groups that hold a directory role |
@@ -121,6 +124,10 @@ report says why. Two cases are different:
 | APP-05 | Apps | Low | App registrations without an owner | Warn for an app registration with no owner. |
 | APP-06 | Apps | Medium | High-risk delegated permissions consented for every user | Fail for an app with tenant-wide consent to a Microsoft Graph permission in `HighRiskPermissions`, unless it is in `AcceptedApps`. |
 | APP-07 | Apps | Low | High-risk delegated permissions consented by users | Warn for an app that users consented to a Microsoft Graph permission in `HighRiskPermissions`, naming the users. |
+| SVC-01 | Service accounts | Medium | Secrets and certificates on enterprise apps | Warn for a current secret or certificate on an enterprise app, which lets someone sign in as it outside its app registration. SAML signing certificates and managed identities are left out. |
+| SVC-02 | Service accounts | High | Service principals in privileged roles | Fail for an app holding a privileged role, directly or through a group, unless it is in `AcceptedApps`. |
+| SVC-03 | Service accounts | High | Apps from other organizations with high-risk permissions | Fail for an app published by another tenant (not Microsoft) holding a `HighRiskPermissions` application permission or tenant-wide delegated consent, unless it is in `AcceptedApps`. |
+| SVC-04 | Service accounts | Low | Disabled apps that still hold permissions or roles | Warn for a disabled enterprise app that still holds an application permission, a delegated grant or a role. |
 | CA-01 | Conditional Access | High | MFA required for all users | Fail unless security defaults are on, or an enabled policy requires MFA or an authentication strength for all users on all apps. |
 | CA-02 | Conditional Access | High | MFA required for administrators | Fail unless security defaults are on, or an enabled policy requires MFA for all users or for Global Administrators on all apps. |
 | CA-03 | Conditional Access | High | Legacy authentication blocked | Fail unless security defaults are on, or an enabled policy blocks Exchange ActiveSync and other clients for all users. |
@@ -177,8 +184,8 @@ there, or the file named by `-ProfilePath`. The example documents each setting:
 | `MaxSecretLifetimeDays` | 365 | APP-03 |
 | `MinGlobalAdmins`, `MaxGlobalAdmins` | 2, 4 | ROLE-01 |
 | `BreakGlassAccounts` | none | ROLE-02, STALE-01, STALE-02, CA-05 leave them out |
-| `AcceptedApps` | none | APP-04, APP-06 and APP-07 count their grants but don't list them |
-| `HighRiskPermissions` | 16 permissions | APP-04, APP-06, APP-07 |
+| `AcceptedApps` | none | APP-04, APP-06, APP-07 and SVC-01 to SVC-03 count them but don't list them |
+| `HighRiskPermissions` | 16 permissions | APP-04, APP-06, APP-07, SVC-03 |
 
 Name your emergency access (break-glass) accounts in `BreakGlassAccounts`.
 They are meant to hold Global Administrator permanently, stay out of
@@ -262,6 +269,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.3.0 | 2026-11-12 | Now with 29 checks. New Service accounts area: SVC-01 secrets and certificates on enterprise apps, SVC-02 apps in privileged roles, SVC-03 apps from other organizations with high-risk permissions, SVC-04 disabled apps that still hold access. No new scope: service principal credentials, publisher and state are read with `Application.Read.All`. Snapshot schema 3; on older snapshots SVC-01, SVC-03 and SVC-04 are Skipped. The HTML report lists areas in check order, so a new area can't be left out. |
 | 0.2.0 | 2026-11-10 | Now with 25 checks. Roles held through a group count for each member, read with the new `GroupMember.Read.All` scope. APP-06 and APP-07 report high-risk delegated permissions consented for every user or by users, read with the new `DelegatedPermissionGrant.Read.All` scope. Snapshot schema 2; schema 1 snapshots still evaluate, with the new checks Skipped. Fixes from the first live run: an empty MFA registration report (a new tenant's, before Microsoft fills it) now skips ROLE-05 and MFA-01 to MFA-03 instead of passing them, and accounts with no registration record make those checks Warn, naming them, instead of being left out. |
 | 0.1.0 | 2026-11-10 | First release. Read-only audit on Microsoft Graph with 23 checks across privileged roles, stale accounts, MFA coverage, apps and Conditional Access; HTML, CSV and JSON reports; snapshots evaluated offline with `-FromSnapshot`; app-only sign-in with a certificate; thresholds and break-glass accounts in a local profile. Pester suite on a fictional tenant and a fake Graph, on 5.1 and 7. |
 

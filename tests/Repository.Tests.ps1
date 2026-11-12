@@ -95,7 +95,7 @@ Describe 'Files' {
 
     It 'uses only fictional IDs in the fixture, apart from Microsoft''s well-known ones' {
         $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'fixtures/westmark.snapshot.json'))
-        $known = @($PrivilegedRoles.Keys) + @($GraphAppId, 'f2ef992c-3afb-46b9-b7cf-a126ee74c451', '00000000-0000-0000-0000-000000000004')
+        $known = @($PrivilegedRoles.Keys) + @($GraphAppId) + @($MicrosoftTenantIds) + @('f2ef992c-3afb-46b9-b7cf-a126ee74c451', '00000000-0000-0000-0000-000000000004')
         $guids = @([regex]::Matches($text, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}') | ForEach-Object Value | Sort-Object -Unique)
         $guids.Count | Should -BeGreaterThan 0
         foreach ($g in $guids) {
