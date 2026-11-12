@@ -34,7 +34,7 @@
 
     # Apps whose high-risk permissions you have reviewed and accept, by display
     # name, service principal object ID or, for delegated permissions, app ID
-    # (APP-04, APP-06, APP-07). They are counted, not listed.
+    # (APP-04, APP-06, APP-07, SVC-01 to SVC-03). They are counted, not listed.
     AcceptedApps          = @(
         # 'Westmark Backup'
     )

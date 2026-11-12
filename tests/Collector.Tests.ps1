@@ -61,7 +61,7 @@ BeforeAll {
             '/v1.0/servicePrincipals/graph-sp/appRoleAssignedTo?$top=999' = ConvertTo-Page @(
                 [pscustomobject]@{ principalId = 'sp1'; principalDisplayName = 'Westmark Sync'; principalType = 'ServicePrincipal'; appRoleId = 'r1'; createdDateTime = '2026-01-01T00:00:00Z' }
                 [pscustomobject]@{ principalId = 'sp2'; principalDisplayName = 'Westmark Old'; principalType = 'ServicePrincipal'; appRoleId = 'gone'; createdDateTime = '2026-01-01T00:00:00Z' })
-            '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType&$top=999' = ConvertTo-Page @(
+            '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType,accountEnabled,appOwnerOrganizationId,createdDateTime,passwordCredentials,keyCredentials&$top=999' = ConvertTo-Page @(
                 [pscustomobject]@{ id = 'graph-sp'; appId = '00000003-0000-0000-c000-000000000000'; displayName = 'Microsoft Graph' }
                 [pscustomobject]@{ id = 'sp1'; appId = 'a1'; displayName = 'Westmark Sync' })
             '/v1.0/oauth2PermissionGrants' = ConvertTo-Page @([pscustomobject]@{ id = 'pg1'; clientId = 'sp1'; consentType = 'AllPrincipals'; principalId = $null; resourceId = 'graph-sp'; scope = 'User.Read Mail.Send' })
