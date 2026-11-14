@@ -245,10 +245,16 @@ The reports name real accounts, guests and apps. Keep them somewhere private.
 The suite needs no tenant and no network. Every check runs against the
 fictional Westmark tenant in `tests/fixtures`, with a Fail or Warn case, a Pass
 case and a Skipped case each; the collector runs against a fake Microsoft
-Graph that pages, refuses licences and denies scopes. It ends with a table of
-what was tested on each edition and the pass, fail, skip and not-run counts.
-A skipped or unrun test fails the run. The lint script ends with a table too:
-files linted, findings and blocking findings on each edition.
+Graph that pages, refuses licences and denies scopes. A skipped or unrun test
+fails the run.
+
+Both scripts end with the same summary block, easy to find and to copy: a
+banner with the pass, fail and skip counts (green when all passed, dark yellow
+with skips, red on any failure), the target, run time and PowerShell version, a
+table with a row per edition, and a RESULT bar. The test table shows the
+fixtures and the passed, failed, skipped and not-run counts; the lint table
+shows files linted, findings and blocking findings. A missing edition, or a run
+that stops with an error, still prints the summary and counts as a failure.
 
 Pester 6.2.0 and PSScriptAnalyzer 1.25.0 are pinned, and installed for the
 current user if missing: from the PowerShell Gallery, then from a second
@@ -269,6 +275,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.3.1 | 2026-11-13 | Writing the CSV report no longer shows a warning that `-NoTypeInformation` is obsolete on newer PowerShell 7 releases. The parameter is passed only on 5.1, which needs it. The test and lint scripts end with a coloured summary banner, table and RESULT bar that copy as plain text, and still print it, as a failure, when a run stops with an error. |
 | 0.3.0 | 2026-11-12 | Now with 29 checks. New Service accounts area: SVC-01 secrets and certificates on enterprise apps, SVC-02 apps in privileged roles, SVC-03 apps from other organizations with high-risk permissions, SVC-04 disabled apps that still hold access. No new scope: service principal credentials, publisher and state are read with `Application.Read.All`. Snapshot schema 3; on older snapshots SVC-01, SVC-03 and SVC-04 are Skipped. The HTML report lists areas in check order, so a new area can't be left out. |
 | 0.2.0 | 2026-11-10 | Now with 25 checks. Roles held through a group count for each member, read with the new `GroupMember.Read.All` scope. APP-06 and APP-07 report high-risk delegated permissions consented for every user or by users, read with the new `DelegatedPermissionGrant.Read.All` scope. Snapshot schema 2; schema 1 snapshots still evaluate, with the new checks Skipped. Fixes from the first live run: an empty MFA registration report (a new tenant's, before Microsoft fills it) now skips ROLE-05 and MFA-01 to MFA-03 instead of passing them, and accounts with no registration record make those checks Warn, naming them, instead of being left out. |
 | 0.1.0 | 2026-11-10 | First release. Read-only audit on Microsoft Graph with 23 checks across privileged roles, stale accounts, MFA coverage, apps and Conditional Access; HTML, CSV and JSON reports; snapshots evaluated offline with `-FromSnapshot`; app-only sign-in with a certificate; thresholds and break-glass accounts in a local profile. Pester suite on a fictional tenant and a fake Graph, on 5.1 and 7. |
