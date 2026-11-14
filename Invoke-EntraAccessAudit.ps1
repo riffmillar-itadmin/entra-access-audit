@@ -26,8 +26,9 @@
     counted, never passed.
 
     Some data needs a premium licence. Sign-in activity, the MFA registration
-    report and Conditional Access need Microsoft Entra ID P1; PIM eligibility
-    and assignment schedules need P2. When the tenant has no licence for them,
+    report and Conditional Access need Microsoft Entra ID P1; PIM eligibility,
+    assignment schedules and activation settings need P2. The directory audit
+    log needs no licence, but goes back 7 days without P1 and 30 with it. When the tenant has no licence for them,
     the checks that need them are Skipped, or say what they couldn't see.
 
     Writes these files into -OutputPath, named by collection time (UTC):
@@ -119,6 +120,12 @@
     0.3.1  2026-11-13  No obsolete-parameter warning when writing the CSV
                        report on PowerShell 7. Test and lint scripts end with
                        a summary banner, table and RESULT bar.
+    0.4.0  2026-11-13  ROLE-07 other privileged roles held permanently,
+                       ROLE-08 eligible roles that never expire, ROLE-09
+                       roles granted to oneself (audit log), ROLE-10 weak PIM
+                       activation rules, ROLE-11 owners of role-holding
+                       groups, SVC-05 owners of apps with high-risk access.
+                       No new scope. Snapshot schema 4.
 #>
 
 [CmdletBinding()]
@@ -135,8 +142,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.3.1'
-$SnapshotSchemaVersion = 3
+$EntraAccessAuditVersion = '0.4.0'
+$SnapshotSchemaVersion = 4
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -153,6 +160,21 @@ $AuditScopes = @(
 # application permissions. The same appId in every tenant.
 $GraphAppId = '00000003-0000-0000-c000-000000000000'
 $GlobalAdminRoleId = '62e90394-69f5-4237-9190-012177145e10'
+$PrivilegedRoleAdminRoleId = 'e8611ab8-c189-46e8-94e1-60213ab1f814'
+
+# Roles that can already change any group's members (ROLE-11) or any app's
+# credentials (SVC-05). An owner who holds one gains nothing by owning.
+$GroupAdminRoleIds = @($GlobalAdminRoleId, $PrivilegedRoleAdminRoleId)
+$AppAdminRoleIds = @(
+    $GlobalAdminRoleId
+    $PrivilegedRoleAdminRoleId
+    '9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3'   # Application Administrator
+    '158c047a-c907-4556-b7ef-446551a6b5f7'   # Cloud Application Administrator
+)
+
+# Datasets added in snapshot schema 4. An older snapshot lacks them, and the
+# checks that need them are Skipped with that reason.
+$Schema4Datasets = @('RoleAuditEvents', 'RolePolicies', 'RoleGroupOwners', 'AppOwners')
 
 # The tenants Microsoft's own apps belong to. An app owned by any other tenant
 # but this one comes from another organization.
@@ -197,6 +219,7 @@ $DefaultAuditProfile = [ordered]@{
     MaxSecretLifetimeDays  = 365
     MinGlobalAdmins        = 2
     MaxGlobalAdmins        = 4
+    MaxActivationHours     = 8
     BreakGlassAccounts     = @()
     AcceptedApps           = @()
     HighRiskPermissions    = @(
@@ -423,21 +446,25 @@ function Get-TenantSnapshot {
     }
     $datasets.Users = $users
 
-    Write-Host 'Reading directory roles...'
+    Write-Host 'Reading directory roles, PIM settings and role changes...'
     $datasets.RoleDefinitions = Read-Dataset -Uri '/v1.0/roleManagement/directory/roleDefinitions'
     $datasets.RoleAssignments = Read-RoleDataset -Path '/v1.0/roleManagement/directory/roleAssignments'
     $datasets.RoleAssignmentSchedules = Read-Dataset -Uri '/v1.0/roleManagement/directory/roleAssignmentSchedules' -Needs 'Microsoft Entra ID P2 (PIM)'
     $datasets.RoleEligibility = Read-RoleDataset -Path '/v1.0/roleManagement/directory/roleEligibilitySchedules' -Needs 'Microsoft Entra ID P2 (PIM)'
     $datasets.RoleGroupMembers = Get-RoleGroupMember -Datasets $datasets
+    $datasets.RoleGroupOwners = Get-RoleGroupOwner -Datasets $datasets
+    $datasets.RolePolicies = Get-RolePolicy
+    $datasets.RoleAuditEvents = Get-RoleAuditEvent
 
     Write-Host 'Reading MFA registration...'
     $datasets.Registration = Read-Dataset -Uri '/v1.0/reports/authenticationMethods/userRegistrationDetails' -Needs 'Microsoft Entra ID P1'
 
     Write-Host 'Reading app registrations and permissions...'
-    $datasets.Applications = Read-Dataset -Uri '/v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$expand=owners($select=id)&$top=100'
+    $datasets.Applications = Read-Dataset -Uri '/v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$expand=owners($select=id,displayName,userPrincipalName)&$top=100'
     $datasets.GraphPermissionGrants = Get-GraphPermissionGrant
     $datasets.ServicePrincipals = Read-Dataset -Uri '/v1.0/servicePrincipals?$select=id,appId,displayName,servicePrincipalType,accountEnabled,appOwnerOrganizationId,createdDateTime,passwordCredentials,keyCredentials&$top=999'
     $datasets.DelegatedPermissionGrants = Read-Dataset -Uri '/v1.0/oauth2PermissionGrants'
+    $datasets.AppOwners = Get-AppOwner -Datasets $datasets
 
     Write-Host 'Reading Conditional Access and security defaults...'
     $datasets.ConditionalAccess = Read-Dataset -Uri '/v1.0/identity/conditionalAccess/policies' -Needs 'Microsoft Entra ID P1'
@@ -489,12 +516,10 @@ function Get-GraphPermissionGrant {
     }
 }
 
-function Get-RoleGroupMember {
-    # Members of every group that holds a directory role, active or eligible,
-    # so each person who holds a role through a group is checked like one who
-    # holds it directly. Role-assignable groups can't contain groups, but
-    # transitiveMembers covers any that do. All or nothing: one group that
-    # can't be read fails the dataset, so no check judges a partial list.
+function Get-RoleGroupId {
+    # The groups that hold a directory role, active or eligible, by ID with
+    # their names. Unexpanded counts assignments read without principal
+    # details, among which groups can't be told apart.
     param([Parameter(Mandatory)]$Datasets)
     $groups = [ordered]@{}
     $unexpanded = 0
@@ -510,29 +535,145 @@ function Get-RoleGroupMember {
             }
         }
     }
-    if ($unexpanded -gt 0) {
-        return (New-Dataset -Status 'NotCollected' -Reason "$unexpanded role assignment(s) were read without principal details, so groups among them can't be told apart.")
+    return [pscustomobject]@{ Groups = $groups; Unexpanded = $unexpanded }
+}
+
+function ConvertTo-DirectoryObject {
+    # The fields kept for a group member or an owner.
+    param($Object)
+    return [ordered]@{
+        '@odata.type'     = Get-Value $Object '@odata.type'
+        id                = Get-Value $Object 'id'
+        displayName       = Get-Value $Object 'displayName'
+        userPrincipalName = Get-Value $Object 'userPrincipalName'
+    }
+}
+
+function Read-GroupRelation {
+    # Members or owners of every group that holds a directory role. All or
+    # nothing: one group that can't be read fails the dataset, so no check
+    # judges a partial list.
+    param([Parameter(Mandatory)]$Datasets, [Parameter(Mandatory)][string]$Relation, [Parameter(Mandatory)][string]$Property)
+    $index = Get-RoleGroupId -Datasets $Datasets
+    if ($index.Unexpanded -gt 0) {
+        return (New-Dataset -Status 'NotCollected' -Reason "$($index.Unexpanded) role assignment(s) were read without principal details, so groups among them can't be told apart.")
     }
     try {
-        $items = foreach ($id in $groups.Keys) {
-            $members = Get-GraphCollection -Uri "/v1.0/groups/$id/transitiveMembers?`$select=id,displayName,userPrincipalName&`$top=999"
+        $items = foreach ($id in $index.Groups.Keys) {
+            $related = Get-GraphCollection -Uri "/v1.0/groups/$id/$Relation`?`$select=id,displayName,userPrincipalName&`$top=999"
             [ordered]@{
                 groupId     = $id
-                displayName = $groups[$id]
-                members     = @(foreach ($m in $members) {
-                        [ordered]@{
-                            '@odata.type'     = Get-Value $m '@odata.type'
-                            id                = Get-Value $m 'id'
-                            displayName       = Get-Value $m 'displayName'
-                            userPrincipalName = Get-Value $m 'userPrincipalName'
-                        }
-                    })
+                displayName = $index.Groups[$id]
+                $Property   = @(foreach ($m in $related) { ConvertTo-DirectoryObject $m })
             }
         }
         return (New-Dataset -Status 'Collected' -Items @($items))
     } catch {
         $text = Get-ErrorText $_
-        Write-Verbose "Couldn't read role group members: $text"
+        Write-Verbose "Couldn't read role group ${Relation}: $text"
+        return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
+    }
+}
+
+function Get-RoleGroupMember {
+    # Members of every group that holds a directory role, so each person who
+    # holds a role through a group is checked like one who holds it directly.
+    # Role-assignable groups can't contain groups, but transitiveMembers
+    # covers any that do.
+    param([Parameter(Mandatory)]$Datasets)
+    return (Read-GroupRelation -Datasets $Datasets -Relation 'transitiveMembers' -Property 'members')
+}
+
+function Get-RoleGroupOwner {
+    # Owners of every group that holds a directory role. An owner can change
+    # the group's members, and so who holds its role.
+    param([Parameter(Mandatory)]$Datasets)
+    return (Read-GroupRelation -Datasets $Datasets -Relation 'owners' -Property 'owners')
+}
+
+function Get-RolePolicy {
+    # PIM's settings for each directory role: what activating it needs and how
+    # long it lasts. Kept to the role and its rules.
+    $ds = Read-Dataset -Uri "/v1.0/policies/roleManagementPolicyAssignments?`$filter=scopeId%20eq%20'/'%20and%20scopeType%20eq%20'DirectoryRole'&`$expand=policy(`$expand=rules)" -Needs 'Microsoft Entra ID P2 (PIM)'
+    if ($ds.Status -ne 'Collected') { return $ds }
+    $ds.Items = @(foreach ($a in $ds.Items) {
+            [ordered]@{
+                roleDefinitionId = Get-Value $a 'roleDefinitionId'
+                policyId         = Get-Value $a 'policyId'
+                rules            = @(Get-Value $a 'policy', 'rules' | Where-Object { $null -ne $_ })
+            }
+        })
+    return $ds
+}
+
+function Get-RoleAuditEvent {
+    # Role changes from the directory audit log: who added whom to which
+    # role, and when. Kept to the fields the checks read. Microsoft keeps the
+    # log for 7 days, or 30 with Microsoft Entra ID P1.
+    $ds = Read-Dataset -Uri "/v1.0/auditLogs/directoryAudits?`$filter=category%20eq%20'RoleManagement'"
+    if ($ds.Status -ne 'Collected') { return $ds }
+    $ds.Items = @(foreach ($e in $ds.Items) {
+            [ordered]@{
+                id                  = Get-Value $e 'id'
+                activityDisplayName = Get-Value $e 'activityDisplayName'
+                activityDateTime    = Get-Value $e 'activityDateTime'
+                result              = Get-Value $e 'result'
+                initiatedBy         = [ordered]@{
+                    userId            = Get-Value $e 'initiatedBy', 'user', 'id'
+                    userPrincipalName = Get-Value $e 'initiatedBy', 'user', 'userPrincipalName'
+                    app               = Get-Value $e 'initiatedBy', 'app', 'displayName'
+                }
+                targetResources     = @(foreach ($t in @(Get-Value $e 'targetResources')) {
+                        if ($null -eq $t) { continue }
+                        [ordered]@{
+                            id                = Get-Value $t 'id'
+                            type              = Get-Value $t 'type'
+                            displayName       = Get-Value $t 'displayName'
+                            userPrincipalName = Get-Value $t 'userPrincipalName'
+                        }
+                    })
+            }
+        })
+    return $ds
+}
+
+function Get-AppOwner {
+    # Owners of the enterprise apps (service principals) that hold a
+    # Microsoft Graph application permission or a directory role: an owner
+    # can add a secret and act as the app. App registration owners come with
+    # the Applications dataset. All or nothing, like the group reads.
+    param([Parameter(Mandatory)]$Datasets)
+    $needed = @('GraphPermissionGrants', 'RoleAssignments', 'ServicePrincipals')
+    $missing = @($needed | Where-Object { "$(Get-Value $Datasets[$_] 'Status')" -ne 'Collected' })
+    if ($missing.Count -gt 0) {
+        return (New-Dataset -Status 'NotCollected' -Reason "Needs $($missing -join ', ') to know which apps to read, and they weren't collected.")
+    }
+    $names = @{}
+    foreach ($sp in @(Get-Value $Datasets['ServicePrincipals'] 'Items')) { if ($null -ne $sp) { $names["$(Get-Value $sp 'id')"] = "$(Get-Value $sp 'displayName')" } }
+    $targets = [ordered]@{}
+    foreach ($g in @(Get-Value $Datasets['GraphPermissionGrants'] 'Items')) { if ($null -ne $g) { $targets["$(Get-Value $g 'principalId')"] = $true } }
+    foreach ($name in 'RoleAssignments', 'RoleEligibility') {
+        $ds = $Datasets[$name]
+        if ($null -eq $ds -or "$(Get-Value $ds 'Status')" -ne 'Collected') { continue }
+        foreach ($a in @(Get-Value $ds 'Items')) {
+            $id = "$(Get-Value $a 'principalId')"
+            if ($null -ne $a -and ("$(Get-Value $a 'principal', '@odata.type')" -match 'servicePrincipal$' -or $names.ContainsKey($id))) { $targets[$id] = $true }
+        }
+    }
+    try {
+        $items = foreach ($id in $targets.Keys) {
+            if (-not $names.ContainsKey($id)) { continue }
+            $owners = Get-GraphCollection -Uri "/v1.0/servicePrincipals/$id/owners?`$select=id,displayName,userPrincipalName&`$top=999"
+            [ordered]@{
+                servicePrincipalId = $id
+                displayName        = $names[$id]
+                owners             = @(foreach ($o in $owners) { ConvertTo-DirectoryObject $o })
+            }
+        }
+        return (New-Dataset -Status 'Collected' -Items @($items))
+    } catch {
+        $text = Get-ErrorText $_
+        Write-Verbose "Couldn't read app owners: $text"
         return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
     }
 }
@@ -595,7 +736,7 @@ function New-RoleHolder {
 function New-RoleHolderRow {
     # One holder row: the principal, the role it holds, and how.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Builds an object in memory; changes nothing.')]
-    param($Holder, [string]$RoleId, [string]$RoleName, [string]$Kind, [bool]$Standing, [hashtable]$BreakGlassIds, [string]$Via)
+    param($Holder, [string]$RoleId, [string]$RoleName, [string]$Kind, [bool]$Standing, [hashtable]$BreakGlassIds, [string]$Via, [bool]$NoExpiry)
     return [pscustomobject]@{
         RoleId        = $RoleId
         RoleName      = $RoleName
@@ -607,6 +748,7 @@ function New-RoleHolderRow {
         Standing      = $Standing
         BreakGlass    = $BreakGlassIds.ContainsKey($Holder.PrincipalId)
         Via           = $Via
+        NoExpiry      = $NoExpiry
     }
 }
 
@@ -631,6 +773,14 @@ function Get-AuditContext {
         $statusReason['ServicePrincipalDetails'] = "The snapshot has schema $schema, from before service principal credentials, owners and state were collected."
     } elseif ($status['ServicePrincipalDetails'] -ne 'Collected') {
         $statusReason['ServicePrincipalDetails'] = "$(Get-Value $ds 'ServicePrincipals', 'Reason')"
+    }
+    # Role audit events, PIM policies and group and app owners arrived in
+    # schema 4.
+    foreach ($name in $Schema4Datasets) {
+        if (-not $status.ContainsKey($name)) {
+            $status[$name] = 'NotCollected'
+            $statusReason[$name] = "The snapshot has schema $schema, from before $name was collected."
+        }
     }
 
     $spsById = @{}
@@ -678,6 +828,10 @@ function Get-AuditContext {
     # RoleGroups; a group whose members weren't read stays a row of its own.
     $holders = [Collections.Generic.List[object]]::new()
     $roleGroups = [Collections.Generic.List[object]]::new()
+    # Privileged roles each group holds, by group ID, whether or not its
+    # members were read.
+    $groupRoles = @{}
+    $eligibleNoSchedule = 0
     $sources = @(
         @{ Kind = 'Active'; Items = @(Get-Value $ds 'RoleAssignments', 'Items') }
         @{ Kind = 'Eligible'; Items = @(Get-Value $ds 'RoleEligibility', 'Items') }
@@ -690,17 +844,25 @@ function Get-AuditContext {
             $roleName = $(if ($roleNames.ContainsKey($roleId)) { $roleNames[$roleId] } else { $roleId })
             $principalId = "$(Get-Value $a 'principalId')"
             $standing = ($source.Kind -eq 'Active' -and -not $timeBound.ContainsKey("$principalId|$roleId"))
+            # Standing active assignments never end; eligible ones never end
+            # when their schedule says so.
+            $noExpiry = $standing -or ($source.Kind -eq 'Eligible' -and "$(Get-Value $a 'scheduleInfo', 'expiration', 'type')" -eq 'noExpiration')
+            if ($source.Kind -eq 'Eligible' -and -not "$(Get-Value $a 'scheduleInfo', 'expiration', 'type')") { $eligibleNoSchedule++ }
             $holder = New-RoleHolder -Principal (Get-Value $a 'principal') -PrincipalId $principalId -UsersById $usersById
+            if ($holder.PrincipalType -eq 'Group') {
+                if (-not $groupRoles.ContainsKey($principalId)) { $groupRoles[$principalId] = [Collections.Generic.List[string]]::new() }
+                $groupRoles[$principalId].Add("$roleName ($($source.Kind))")
+            }
             if ($holder.PrincipalType -eq 'Group' -and $groupMembers.ContainsKey($principalId)) {
                 $members = $groupMembers[$principalId]
                 $roleGroups.Add([pscustomobject]@{ Name = $holder.Name; RoleName = $roleName; Kind = $source.Kind; MemberCount = $members.Count })
                 foreach ($m in $members) {
                     $member = New-RoleHolder -Principal $m -PrincipalId "$(Get-Value $m 'id')" -UsersById $usersById
-                    $holders.Add((New-RoleHolderRow $member $roleId $roleName $source.Kind $standing $breakGlassIds $holder.Name))
+                    $holders.Add((New-RoleHolderRow $member $roleId $roleName $source.Kind $standing $breakGlassIds $holder.Name $noExpiry))
                 }
                 continue
             }
-            $holders.Add((New-RoleHolderRow $holder $roleId $roleName $source.Kind $standing $breakGlassIds ''))
+            $holders.Add((New-RoleHolderRow $holder $roleId $roleName $source.Kind $standing $breakGlassIds '' $noExpiry))
         }
     }
 
@@ -731,6 +893,8 @@ function Get-AuditContext {
         StatusReason  = $statusReason
         SpsById       = $spsById
         TenantId      = "$(Get-Value $Snapshot 'TenantId')"
+        GroupRoles    = $groupRoles
+        EligibleNoSchedule = $eligibleNoSchedule
     }
 }
 
@@ -820,6 +984,39 @@ function Get-CaBaseline {
                 @(New-Finding 'Tenant' 'Turn on security defaults, or license Microsoft Entra ID P1 and add a Conditional Access policy.'))
     }
     return (New-Outcome Skipped "Conditional Access was not collected ($ca) and security defaults are $sdState.")
+}
+
+function Get-HolderIdsInRole {
+    # IDs of every principal that holds one of the roles, active or eligible.
+    param($Context, [string[]]$RoleIds)
+    $ids = @{}
+    foreach ($h in $Context.Holders) { if ($RoleIds -contains $h.RoleId) { $ids[$h.PrincipalId] = $true } }
+    return $ids
+}
+
+function Get-OwnerName {
+    # An owner's name: its UPN, its display name, or its ID.
+    param($Context, $Owner)
+    $id = "$(Get-Value $Owner 'id')"
+    $name = "$(Get-Value $Owner 'userPrincipalName')"
+    if (-not $name -and $Context.UsersById.ContainsKey($id)) { $name = "$(Get-Value $Context.UsersById[$id] 'userPrincipalName')" }
+    if (-not $name) { $name = "$(Get-Value $Owner 'displayName')" }
+    if (-not $name) { $name = $id }
+    return $name
+}
+
+function Get-PolicyRule {
+    # One rule of a PIM policy, by its ID, or $null.
+    param($Policy, [string]$RuleId)
+    return (@(Get-Value $Policy 'rules' | Where-Object { $null -ne $_ -and "$(Get-Value $_ 'id')" -eq $RuleId }) | Select-Object -First 1)
+}
+
+function ConvertTo-Hour {
+    # An ISO 8601 duration such as PT8H as hours, or $null if it isn't one.
+    param([string]$Duration)
+    if (-not $Duration) { return $null }
+    try { return [Xml.XmlConvert]::ToTimeSpan($Duration).TotalHours }
+    catch { Write-Verbose "Not a duration: $Duration"; return $null }
 }
 
 # Each check: Id, Area, Title, Severity, the datasets it needs, and a test that
@@ -933,6 +1130,146 @@ $AuditChecks = @(
             )
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) privileged assignment(s) go to a group or an app. Review who controls each." $findings) }
             return (New-Outcome Pass 'Every privileged role is assigned to user accounts directly.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-07'; Area = 'Privileged roles'; Severity = 'Medium'
+        Title = 'Other privileged roles held permanently'
+        Needs = @('RoleAssignments')
+        Test = {
+            param($Context)
+            $standing = @($Context.Holders | Where-Object {
+                    $_.Kind -eq 'Active' -and $_.Standing -and $_.RoleId -ne $GlobalAdminRoleId -and -not $_.BreakGlass -and $_.PrincipalType -ne 'ServicePrincipal'
+                })
+            $note = ''
+            if ($Context.Status['RoleAssignmentSchedules'] -ne 'Collected') {
+                $note = " PIM schedules weren't collected ($($Context.Status['RoleAssignmentSchedules'])), so every active assignment counts as permanent."
+            }
+            $findings = foreach ($id in @($standing | ForEach-Object PrincipalId | Sort-Object -Unique)) {
+                $h = @($standing | Where-Object PrincipalId -eq $id)
+                New-Finding $h[0].Name "$(@($h | ForEach-Object { Get-HolderRoleText $_ } | Sort-Object -Unique) -join ', '); permanently active"
+            }
+            $findings = @($findings | Sort-Object Subject)
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) account(s) hold a privileged role permanently, with no end date. Make them eligible in PIM, or give each assignment an end date.$note" $findings) }
+            return (New-Outcome Pass "No account holds a privileged role permanently, apart from Global Administrator (ROLE-02), apps (SVC-02) and break-glass.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-08'; Area = 'Privileged roles'; Severity = 'Low'
+        Title = 'Eligible privileged roles that never expire'
+        Needs = @('RoleEligibility')
+        Test = {
+            param($Context)
+            $eligible = @($Context.Holders | Where-Object Kind -eq 'Eligible')
+            $open = @($eligible | Where-Object { $_.NoExpiry -and -not $_.BreakGlass })
+            $note = if ($Context.EligibleNoSchedule) { " $($Context.EligibleNoSchedule) eligible assignment(s) had no schedule to read, so their end dates weren't checked." } else { '' }
+            $findings = foreach ($id in @($open | ForEach-Object PrincipalId | Sort-Object -Unique)) {
+                $h = @($open | Where-Object PrincipalId -eq $id)
+                New-Finding $h[0].Name "$(@($h | ForEach-Object { Get-HolderRoleText $_ } | Sort-Object -Unique) -join ', '); eligible with no end date"
+            }
+            $findings = @($findings | Sort-Object Subject)
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) account(s) are eligible for a privileged role with no end date, so the eligibility is never reviewed. Give each an end date, or review it with an access review.$note" $findings) }
+            if ($eligible.Count -eq 0) { return (New-Outcome Pass "No account is eligible for a privileged role.$note") }
+            return (New-Outcome Pass "Every eligible privileged assignment has an end date, apart from break-glass.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-09'; Area = 'Privileged roles'; Severity = 'High'
+        Title = 'Roles granted to oneself'
+        Needs = @('RoleAuditEvents')
+        Test = {
+            param($Context)
+            $events = @(Get-Value $Context.Snapshot 'Datasets', 'RoleAuditEvents', 'Items' | Where-Object { $null -ne $_ })
+            if ($events.Count -eq 0) { return (New-Outcome Pass 'The audit log holds no role changes to check. Microsoft keeps it for 7 days, or 30 with Microsoft Entra ID P1.') }
+            $oldest = @($events | ForEach-Object { ConvertTo-UtcDate (Get-Value $_ 'activityDateTime') } | Where-Object { $null -ne $_ } | Sort-Object)[0]
+            # Adding a role, eligible or active, directly or through PIM. A PIM
+            # activation is a person using their own eligibility, so it doesn't
+            # count; nor does a change PIM completes on someone's behalf, which
+            # names no user as its initiator.
+            $adds = @($events | Where-Object {
+                    "$(Get-Value $_ 'activityDisplayName')" -match '^Add (eligible |scoped )?member to role' -and
+                    "$(Get-Value $_ 'activityDisplayName')" -notmatch 'activat' -and
+                    "$(Get-Value $_ 'result')" -eq 'success'
+                })
+            $findings = foreach ($e in $adds) {
+                $by = "$(Get-Value $e 'initiatedBy', 'userId')"
+                if (-not $by) { continue }
+                $targets = @(Get-Value $e 'targetResources' | Where-Object { $null -ne $_ })
+                if (-not @($targets | Where-Object { "$(Get-Value $_ 'type')" -eq 'User' -and "$(Get-Value $_ 'id')" -eq $by })) { continue }
+                $role = @($targets | Where-Object { "$(Get-Value $_ 'type')" -eq 'Role' } | ForEach-Object { "$(Get-Value $_ 'displayName')" } | Where-Object { $_ })
+                $roleText = if ($role.Count) { $role -join ', ' } else { 'a role' }
+                $name = "$(Get-Value $e 'initiatedBy', 'userPrincipalName')"
+                if (-not $name -and $Context.UsersById.ContainsKey($by)) { $name = "$(Get-Value $Context.UsersById[$by] 'userPrincipalName')" }
+                if (-not $name) { $name = $by }
+                New-Finding $name "$(Get-Value $e 'activityDisplayName'): $roleText, $(Format-AuditDate (Get-Value $e 'activityDateTime'))"
+            }
+            $findings = @($findings | Sort-Object Subject, Detail)
+            $since = if ($null -ne $oldest) { " since $(Format-AuditDate $oldest)" } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) role assignment(s) in the audit log$since were made by the account that received them. Confirm each was approved, and require a second person for role changes." $findings) }
+            return (New-Outcome Pass "None of the $($adds.Count) role addition(s) in the audit log$since was made by the account that received it. The log goes back 7 days, or 30 with Microsoft Entra ID P1.")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-10'; Area = 'Privileged roles'; Severity = 'Medium'
+        Title = 'Weak PIM activation rules for privileged roles'
+        Needs = @('RolePolicies', 'RoleEligibility')
+        Test = {
+            param($Context)
+            $eligible = @($Context.Holders | Where-Object Kind -eq 'Eligible')
+            if ($eligible.Count -eq 0) { return (New-Outcome Pass 'No account is eligible for a privileged role, so no activation rule is in use.') }
+            $max = $Context.Profile.MaxActivationHours
+            $policies = @{}
+            foreach ($a in @(Get-Value $Context.Snapshot 'Datasets', 'RolePolicies', 'Items')) { if ($null -ne $a) { $policies["$(Get-Value $a 'roleDefinitionId')"] = $a } }
+            $unread = [Collections.Generic.List[string]]::new()
+            $findings = foreach ($roleId in @($eligible | ForEach-Object RoleId | Sort-Object -Unique)) {
+                $holders = @($eligible | Where-Object RoleId -eq $roleId)
+                $roleName = $holders[0].RoleName
+                if (-not $policies.ContainsKey($roleId)) { $unread.Add($roleName); continue }
+                $policy = $policies[$roleId]
+                $issues = [Collections.Generic.List[string]]::new()
+                $enabled = @(Get-Value (Get-PolicyRule $policy 'Enablement_EndUser_Assignment') 'enabledRules')
+                $authContext = (Get-Value (Get-PolicyRule $policy 'AuthenticationContext_EndUser_Assignment') 'isEnabled') -eq $true
+                if ($enabled -notcontains 'MultiFactorAuthentication' -and -not $authContext) { $issues.Add('activation needs no MFA') }
+                $hours = ConvertTo-Hour "$(Get-Value (Get-PolicyRule $policy 'Expiration_EndUser_Assignment') 'maximumDuration')"
+                if ($null -ne $hours -and $hours -gt $max) { $issues.Add("activation lasts up to $hours hours") }
+                if (@($GlobalAdminRoleId, $PrivilegedRoleAdminRoleId) -contains $roleId -and
+                    (Get-Value (Get-PolicyRule $policy 'Approval_EndUser_Assignment') 'setting', 'isApprovalRequired') -ne $true) {
+                    $issues.Add('activation needs no approval')
+                }
+                if ($issues.Count -gt 0) {
+                    $people = @($holders | ForEach-Object PrincipalId | Sort-Object -Unique).Count
+                    New-Finding $roleName "$($issues -join '; '); $people eligible account(s)"
+                }
+            }
+            $findings = @($findings | Sort-Object Subject)
+            $note = if ($unread.Count) { " No PIM policy was read for $($unread -join ', '), so it wasn't checked." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) privileged role(s) with eligible accounts can be activated too easily. Require MFA, keep activation to $max hours or less, and require approval for Global and Privileged Role Administrator.$note" $findings) }
+            return (New-Outcome Pass "Every privileged role with eligible accounts needs MFA to activate and lasts $max hours or less, and Global and Privileged Role Administrator need approval.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-11'; Area = 'Privileged roles'; Severity = 'High'
+        Title = 'Owners of groups that hold privileged roles'
+        Needs = @('RoleGroupOwners', 'RoleAssignments')
+        Test = {
+            param($Context)
+            $admins = Get-HolderIdsInRole $Context $GroupAdminRoleIds
+            $skipped = 0
+            $findings = foreach ($g in @(Get-Value $Context.Snapshot 'Datasets', 'RoleGroupOwners', 'Items' | Where-Object { $null -ne $_ })) {
+                $groupId = "$(Get-Value $g 'groupId')"
+                if (-not $Context.GroupRoles.ContainsKey($groupId)) { continue }
+                $roles = @($Context.GroupRoles[$groupId] | Sort-Object -Unique) -join ', '
+                foreach ($o in @(Get-Value $g 'owners' | Where-Object { $null -ne $_ })) {
+                    $id = "$(Get-Value $o 'id')"
+                    if ($admins.ContainsKey($id) -or $Context.BreakGlassIds.ContainsKey($id)) { $skipped++; continue }
+                    New-Finding (Get-OwnerName $Context $o) "Owns $(Get-Value $g 'displayName'), which holds $roles"
+                }
+            }
+            $findings = @($findings | Sort-Object Subject, Detail)
+            $note = if ($skipped) { " $skipped owner(s) who are Global or Privileged Role Administrators, or break-glass, were not counted." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) group owner(s) can add themselves to a group that holds a privileged role, and so take the role. Remove the owners, or make them hold the role themselves under PIM.$note" $findings) }
+            if ($Context.GroupRoles.Count -eq 0) { return (New-Outcome Pass 'No group holds a privileged role.') }
+            return (New-Outcome Pass "No one else owns a group that holds a privileged role.$note")
         }
     }
     [pscustomobject]@{
@@ -1300,6 +1637,56 @@ $AuditChecks = @(
             $findings = @($findings)
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) disabled app(s) still hold permissions or roles. Remove what they no longer need, so turning them back on doesn't restore it." $findings) }
             return (New-Outcome Pass 'No disabled app holds a permission or role.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'SVC-05'; Area = 'Service accounts'; Severity = 'High'
+        Title = 'Owners of apps with high-risk access'
+        Needs = @('AppOwners', 'Applications', 'ServicePrincipals', 'GraphPermissionGrants', 'RoleAssignments')
+        Test = {
+            param($Context)
+            # What each app can do: high-risk application permissions and
+            # privileged roles.
+            $risky = @($Context.Profile.HighRiskPermissions)
+            $access = @{}
+            foreach ($g in @(Get-Value $Context.Snapshot 'Datasets', 'GraphPermissionGrants', 'Items')) {
+                if ($null -eq $g -or $risky -notcontains "$(Get-Value $g 'permission')") { continue }
+                $id = "$(Get-Value $g 'principalId')"
+                if (-not $access.ContainsKey($id)) { $access[$id] = [Collections.Generic.List[string]]::new() }
+                $access[$id].Add("$(Get-Value $g 'permission')")
+            }
+            foreach ($h in @($Context.Holders | Where-Object PrincipalType -eq 'ServicePrincipal')) {
+                if (-not $access.ContainsKey($h.PrincipalId)) { $access[$h.PrincipalId] = [Collections.Generic.List[string]]::new() }
+                $access[$h.PrincipalId].Add((Get-HolderRoleText $h))
+            }
+            $spOwners = @{}
+            foreach ($o in @(Get-Value $Context.Snapshot 'Datasets', 'AppOwners', 'Items')) { if ($null -ne $o) { $spOwners["$(Get-Value $o 'servicePrincipalId')"] = @(Get-Value $o 'owners' | Where-Object { $null -ne $_ }) } }
+            $appsByAppId = @{}
+            foreach ($a in @(Get-Value $Context.Snapshot 'Datasets', 'Applications', 'Items')) { if ($null -ne $a) { $appsByAppId["$(Get-Value $a 'appId')"] = $a } }
+            $admins = Get-HolderIdsInRole $Context $AppAdminRoleIds
+            $skipped = 0; $accepted = 0
+            $findings = foreach ($id in $access.Keys) {
+                $sp = $Context.SpsById[$id]
+                if ($null -eq $sp) { continue }
+                if (Test-AcceptedApp $Context $sp) { $accepted++; continue }
+                $what = @($access[$id] | Sort-Object -Unique) -join ', '
+                $app = $appsByAppId["$(Get-Value $sp 'appId')"]
+                $owned = @(
+                    foreach ($o in @($spOwners[$id])) { if ($null -ne $o) { @{ Owner = $o; Of = 'enterprise app' } } }
+                    if ($null -ne $app) { foreach ($o in @(Get-Value $app 'owners' | Where-Object { $null -ne $_ })) { @{ Owner = $o; Of = 'app registration' } } }
+                )
+                foreach ($x in $owned) {
+                    $ownerId = "$(Get-Value $x.Owner 'id')"
+                    if ($admins.ContainsKey($ownerId) -or $Context.BreakGlassIds.ContainsKey($ownerId)) { $skipped++; continue }
+                    New-Finding (Get-OwnerName $Context $x.Owner) "Owns the $($x.Of) $(Get-Value $sp 'displayName'), which holds $what"
+                }
+            }
+            $findings = @($findings | Sort-Object Subject, Detail)
+            $note = ''
+            if ($skipped) { $note += " $skipped owner(s) who already hold an admin role over apps, or are break-glass, were not counted." }
+            if ($accepted) { $note += " $accepted app(s) listed in AcceptedApps were not counted." }
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) owner(s) can add a secret to an app that holds high-risk access, and act as it with no MFA. Remove the owners, or reduce what the app holds.$note" $findings) }
+            return (New-Outcome Pass "No one outside the admin roles owns an app that holds a high-risk permission or a privileged role.$note")
         }
     }
     [pscustomobject]@{

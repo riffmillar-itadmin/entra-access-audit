@@ -67,10 +67,11 @@ Describe 'The Westmark fixture as it is' {
     It 'gives each check the expected result' {
         $expected = [ordered]@{
             'ROLE-01' = 'Pass'; 'ROLE-02' = 'Fail'; 'ROLE-03' = 'Fail'; 'ROLE-04' = 'Fail'; 'ROLE-05' = 'Fail'; 'ROLE-06' = 'Warn'
+            'ROLE-07' = 'Fail'; 'ROLE-08' = 'Warn'; 'ROLE-09' = 'Fail'; 'ROLE-10' = 'Warn'; 'ROLE-11' = 'Fail'
             'STALE-01' = 'Fail'; 'STALE-02' = 'Fail'; 'STALE-03' = 'Fail'; 'STALE-04' = 'Warn'
             'MFA-01' = 'Fail'; 'MFA-02' = 'Warn'; 'MFA-03' = 'Fail'
             'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
-            'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'
+            'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'; 'SVC-05' = 'Fail'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
@@ -277,6 +278,169 @@ Describe 'Privileged roles' {
         $s = Get-Fixture; Set-NotCollected $s 'RoleAssignments' 'Error'
         $r = Get-Result $s
         foreach ($id in 'ROLE-01', 'ROLE-02', 'ROLE-03', 'ROLE-04', 'ROLE-05', 'ROLE-06', 'MFA-03') { $r[$id].Status | Should -Be 'Skipped' -Because $id }
+    }
+    It 'ROLE-07 fails on other privileged roles held permanently, leaving out Global Administrator, apps and time-bound assignments' {
+        $r = (Get-Result (Get-Fixture))['ROLE-07']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('jo.park@westmark.example', 'riley.ng@westmark.example', 'vendor.ops_partner.example#EXT#@westmark.example')
+        @($r.Findings | Where-Object Subject -eq 'jo.park@westmark.example')[0].Detail | Should -Be 'Helpdesk Administrator via Helpdesk Tier 2; permanently active'
+        # Dana Kim's Exchange Administrator has an end date; Avery Lee's Global Administrator is ROLE-02's.
+        Get-Subject $r | Should -Not -Contain 'dana.kim@westmark.example'
+        Get-Subject $r | Should -Not -Contain 'admin.lee@westmark.example'
+    }
+
+    It 'ROLE-07 passes once those assignments end, and says when PIM schedules were not read' {
+        $s = Get-Fixture
+        Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-05', 'ra-06'
+        $r = (Get-Result $s)['ROLE-07']
+        $r.Status | Should -Be 'Pass'
+        Set-NotCollected $s 'RoleAssignmentSchedules'
+        $r = (Get-Result $s)['ROLE-07']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('dana.kim@westmark.example')
+        $r.Summary | Should -Match 'every active assignment counts as permanent'
+    }
+
+    It 'ROLE-07 is skipped without role assignments' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAssignments' 'Denied'
+        (Get-Result $s)['ROLE-07'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-08 warns on an eligible assignment with no end date, and passes once it has one' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['ROLE-08']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('sam.ortiz@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Global Administrator; eligible with no end date'
+        (Get-FixtureItem $s 'RoleEligibility' 'id' 'ra-09').scheduleInfo.expiration.type = 'afterDateTime'
+        $r = (Get-Result $s)['ROLE-08']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^Every eligible privileged assignment has an end date'
+    }
+
+    It 'ROLE-08 says when an eligible assignment had no schedule to read, rather than passing it silently' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'RoleEligibility' 'id' 'ra-09').PSObject.Properties.Remove('scheduleInfo')
+        $r = (Get-Result $s)['ROLE-08']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match "1 eligible assignment\(s\) had no schedule to read, so their end dates weren't checked"
+    }
+
+    It 'ROLE-08 is skipped without PIM eligibility' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleEligibility'
+        (Get-Result $s)['ROLE-08'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-09 fails on a role an account added to itself, leaving out PIM activations, PIM''s own completions and failed attempts' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['ROLE-09']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('vendor.ops_partner.example#EXT#@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Add member to role: Security Administrator, 2026-10-24'
+        $r.Summary | Should -Match 'since 2026-10-20'
+    }
+
+    It 'ROLE-09 counts an eligible assignment made through PIM to oneself' {
+        $s = Get-Fixture
+        $e = Get-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-03'
+        $e.activityDisplayName = 'Add eligible member to role in PIM requested (permanent)'
+        Get-Subject (Get-Result $s)['ROLE-09'] | Should -Contain 'sam.ortiz@westmark.example'
+    }
+
+    It 'ROLE-09 passes when someone else made each change, and says how far back the log goes' {
+        $s = Get-Fixture
+        Remove-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-02'
+        $r = (Get-Result $s)['ROLE-09']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^None of the 1 role addition\(s\) in the audit log since 2026-10-20'
+    }
+
+    It 'ROLE-09 says when the audit log holds no role changes' {
+        $s = Get-Fixture; $s.Datasets.RoleAuditEvents.Items = @()
+        $r = (Get-Result $s)['ROLE-09']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^The audit log holds no role changes to check'
+    }
+
+    It 'ROLE-09 is skipped without the audit log' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAuditEvents' 'Denied'
+        (Get-Result $s)['ROLE-09'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-10 warns on weak activation rules for a role with eligible accounts' {
+        $r = (Get-Result (Get-Fixture))['ROLE-10']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Global Administrator')
+        $r.Findings[0].Detail | Should -Be 'activation needs no MFA; activation lasts up to 10 hours; activation needs no approval; 1 eligible account(s)'
+    }
+
+    It 'ROLE-10 passes once activation needs MFA and approval and lasts no more than MaxActivationHours' {
+        $s = Get-Fixture
+        $policy = Get-FixtureItem $s 'RolePolicies' 'roleDefinitionId' '62e90394-69f5-4237-9190-012177145e10'
+        @($policy.rules | Where-Object id -eq 'Enablement_EndUser_Assignment')[0].enabledRules = @('MultiFactorAuthentication', 'Justification')
+        @($policy.rules | Where-Object id -eq 'Approval_EndUser_Assignment')[0].setting.isApprovalRequired = $true
+        @($policy.rules | Where-Object id -eq 'Expiration_EndUser_Assignment')[0].maximumDuration = 'PT8H'
+        (Get-Result $s)['ROLE-10'].Status | Should -Be 'Pass'
+    }
+
+    It 'ROLE-10 accepts an authentication context in place of MFA, and honours MaxActivationHours' {
+        $s = Get-Fixture
+        $policy = Get-FixtureItem $s 'RolePolicies' 'roleDefinitionId' '62e90394-69f5-4237-9190-012177145e10'
+        @($policy.rules | Where-Object id -eq 'AuthenticationContext_EndUser_Assignment')[0].isEnabled = $true
+        @($policy.rules | Where-Object id -eq 'Approval_EndUser_Assignment')[0].setting.isApprovalRequired = $true
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.MaxActivationHours = 12
+        (Get-Result $s $p)['ROLE-10'].Status | Should -Be 'Pass'
+    }
+
+    It 'ROLE-10 names a role whose policy was not read, and passes when no one is eligible' {
+        $s = Get-Fixture
+        Remove-FixtureItem $s 'RolePolicies' 'roleDefinitionId' '62e90394-69f5-4237-9190-012177145e10'
+        $r = (Get-Result $s)['ROLE-10']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match "No PIM policy was read for Global Administrator, so it wasn't checked"
+        Remove-FixtureItem $s 'RoleEligibility' 'id' 'ra-09'
+        (Get-Result $s)['ROLE-10'].Summary | Should -Match '^No account is eligible for a privileged role'
+    }
+
+    It 'ROLE-10 is skipped without the PIM policies' {
+        $s = Get-Fixture; Set-NotCollected $s 'RolePolicies'
+        (Get-Result $s)['ROLE-10'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-11 fails on an owner of a group that holds a privileged role, leaving out Global Administrators' {
+        $r = (Get-Result (Get-Fixture))['ROLE-11']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('dana.kim@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Owns Helpdesk Tier 2, which holds Helpdesk Administrator (Active)'
+        $r.Summary | Should -Match '1 owner\(s\) who are Global or Privileged Role Administrators'
+    }
+
+    It 'ROLE-11 passes when only admins own the group, and when no group holds a role' {
+        $s = Get-Fixture
+        $g = Get-FixtureItem $s 'RoleGroupOwners' 'groupId' '00000000-0000-4000-8000-000000000101'
+        $g.owners = @($g.owners | Where-Object id -ne '00000000-0000-4000-8000-000000000005')
+        (Get-Result $s)['ROLE-11'].Status | Should -Be 'Pass'
+        Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-06'
+        (Get-Result $s)['ROLE-11'].Summary | Should -Be 'No group holds a privileged role.'
+    }
+
+    It 'ROLE-11 is skipped when the group owners could not be read' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleGroupOwners' 'Denied'
+        (Get-Result $s)['ROLE-11'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-07 to ROLE-11 and SVC-05 are skipped on a snapshot from before schema 4, not passed' {
+        $s = Get-Fixture
+        $s.SchemaVersion = 3
+        foreach ($name in 'RoleAuditEvents', 'RolePolicies', 'RoleGroupOwners', 'AppOwners') { $s.Datasets.PSObject.Properties.Remove($name) }
+        $r = Get-Result $s
+        foreach ($id in 'ROLE-09', 'ROLE-10', 'ROLE-11', 'SVC-05') {
+            $r[$id].Status | Should -Be 'Skipped' -Because $id
+            $r[$id].Summary | Should -Match 'was not collected \(NotCollected\): The snapshot has schema 3, from before' -Because $id
+        }
+        # ROLE-07 and ROLE-08 read data every schema has.
+        $r['ROLE-07'].Status | Should -Be 'Fail'
+        $r['ROLE-08'].Status | Should -Be 'Warn'
     }
 }
 
@@ -643,6 +807,39 @@ Describe 'Service accounts' {
         $r = (Get-Result $s)['SVC-04']
         @($r.Findings | Where-Object Subject -eq 'Westmark Provisioning')[0].Detail | Should -Be 'Disabled, still holds: User Administrator'
         @($r.Findings | Where-Object Subject -eq 'Westmark Intranet')[0].Detail | Should -Match 'delegated: openid profile User\.Read'
+    }
+    It 'SVC-05 fails on an owner who could add a secret to an app with high-risk access, leaving out app admins' {
+        $r = (Get-Result (Get-Fixture))['SVC-05']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('new.hire@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Owns the enterprise app Westmark HR Sync, which holds User.ReadWrite.All'
+        # Avery Lee owns the HR Sync app registration but is a Global Administrator.
+        $r.Summary | Should -Match '1 owner\(s\) who already hold an admin role over apps'
+    }
+
+    It 'SVC-05 counts app registration owners and apps in privileged roles' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Applications' 'displayName' 'Westmark HR Sync').owners = @([pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = '00000000-0000-4000-8000-000000000014' })
+        (Get-FixtureItem $s 'AppOwners' 'displayName' 'Westmark Provisioning').owners = @([pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = '00000000-0000-4000-8000-000000000007'; displayName = 'Jo Park'; userPrincipalName = 'jo.park@westmark.example' })
+        $r = (Get-Result $s)['SVC-05']
+        Get-Subject $r | Should -Be @('jo.park@westmark.example', 'new.hire@westmark.example', 'riley.ng@westmark.example')
+        @($r.Findings | Where-Object Subject -eq 'riley.ng@westmark.example')[0].Detail | Should -Be 'Owns the app registration Westmark HR Sync, which holds User.ReadWrite.All'
+        @($r.Findings | Where-Object Subject -eq 'jo.park@westmark.example')[0].Detail | Should -Be 'Owns the enterprise app Westmark Provisioning, which holds User Administrator'
+    }
+
+    It 'SVC-05 passes when no one else owns those apps, and counts AcceptedApps' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'AppOwners' 'displayName' 'Westmark HR Sync').owners = @()
+        (Get-Result $s)['SVC-05'].Status | Should -Be 'Pass'
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.AcceptedApps = @('Westmark HR Sync')
+        $r = (Get-Result (Get-Fixture) $p)['SVC-05']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 app\(s\) listed in AcceptedApps'
+    }
+
+    It 'SVC-05 is skipped when the app owners could not be read' {
+        $s = Get-Fixture; Set-NotCollected $s 'AppOwners' 'NotCollected'
+        (Get-Result $s)['SVC-05'].Status | Should -Be 'Skipped'
     }
 }
 

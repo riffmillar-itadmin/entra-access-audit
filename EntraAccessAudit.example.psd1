@@ -24,17 +24,23 @@
     MinGlobalAdmins       = 2
     MaxGlobalAdmins       = 4
 
+    # Longest a PIM activation of a privileged role should last, in hours
+    # (ROLE-10).
+    MaxActivationHours    = 8
+
     # Emergency access accounts, by user principal name. They are expected to
     # hold Global Administrator permanently, to be excluded from Conditional
-    # Access and to sign in rarely, so ROLE-02, STALE-01, STALE-02 and CA-05
-    # leave them out. They still count in ROLE-01, and still need MFA.
+    # Access and to sign in rarely, so ROLE-02, ROLE-07, ROLE-08, ROLE-11,
+    # SVC-05, STALE-01, STALE-02 and CA-05 leave them out. They still count in
+    # ROLE-01, and still need MFA.
     BreakGlassAccounts    = @(
         # 'bg.one@westmark.example'
     )
 
     # Apps whose high-risk permissions you have reviewed and accept, by display
     # name, service principal object ID or, for delegated permissions, app ID
-    # (APP-04, APP-06, APP-07, SVC-01 to SVC-03). They are counted, not listed.
+    # (APP-04, APP-06, APP-07, SVC-01 to SVC-03, SVC-05). They are counted, not
+    # listed.
     AcceptedApps          = @(
         # 'Westmark Backup'
     )
