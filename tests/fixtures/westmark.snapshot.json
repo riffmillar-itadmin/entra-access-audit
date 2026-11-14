@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 3,
-  "ToolVersion": "0.3.0",
+  "SchemaVersion": 4,
+  "ToolVersion": "0.4.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -419,6 +419,13 @@
             "displayName": "Sam Ortiz",
             "userPrincipalName": "sam.ortiz@westmark.example",
             "userType": "Member"
+          },
+          "scheduleInfo": {
+            "startDateTime": "2026-06-01T09:00:00Z",
+            "expiration": {
+              "type": "noExpiration",
+              "endDateTime": null
+            }
           }
         }
       ]
@@ -442,6 +449,226 @@
               "id": "00000000-0000-4000-8000-000000000014",
               "displayName": "Riley Ng",
               "userPrincipalName": "riley.ng@westmark.example"
+            }
+          ]
+        }
+      ]
+    },
+    "RoleGroupOwners": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "groupId": "00000000-0000-4000-8000-000000000101",
+          "displayName": "Helpdesk Tier 2",
+          "owners": [
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000005",
+              "displayName": "Dana Kim",
+              "userPrincipalName": "dana.kim@westmark.example"
+            },
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000001",
+              "displayName": "Avery Lee",
+              "userPrincipalName": "admin.lee@westmark.example"
+            }
+          ]
+        }
+      ]
+    },
+    "RolePolicies": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "roleDefinitionId": "62e90394-69f5-4237-9190-012177145e10",
+          "policyId": "Directory_pol-ga",
+          "rules": [
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyEnablementRule",
+              "id": "Enablement_EndUser_Assignment",
+              "enabledRules": [
+                "Justification"
+              ]
+            },
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule",
+              "id": "AuthenticationContext_EndUser_Assignment",
+              "isEnabled": false,
+              "claimValue": null
+            },
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyApprovalRule",
+              "id": "Approval_EndUser_Assignment",
+              "setting": {
+                "isApprovalRequired": false
+              }
+            },
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule",
+              "id": "Expiration_EndUser_Assignment",
+              "isExpirationRequired": true,
+              "maximumDuration": "PT10H"
+            }
+          ]
+        },
+        {
+          "roleDefinitionId": "29232cdf-9323-42fd-ade2-1d097af3e4de",
+          "policyId": "Directory_pol-exo",
+          "rules": [
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyEnablementRule",
+              "id": "Enablement_EndUser_Assignment",
+              "enabledRules": [
+                "MultiFactorAuthentication",
+                "Justification"
+              ]
+            },
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyApprovalRule",
+              "id": "Approval_EndUser_Assignment",
+              "setting": {
+                "isApprovalRequired": false
+              }
+            },
+            {
+              "@odata.type": "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule",
+              "id": "Expiration_EndUser_Assignment",
+              "isExpirationRequired": true,
+              "maximumDuration": "PT8H"
+            }
+          ]
+        }
+      ]
+    },
+    "RoleAuditEvents": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "id": "ae-01",
+          "activityDisplayName": "Add member to role",
+          "activityDateTime": "2026-10-20T10:00:00Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000001",
+            "userPrincipalName": "admin.lee@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "00000000-0000-4000-8000-000000000005",
+              "type": "User",
+              "displayName": null,
+              "userPrincipalName": "dana.kim@westmark.example"
+            },
+            {
+              "id": "29232cdf-9323-42fd-ade2-1d097af3e4de",
+              "type": "Role",
+              "displayName": "Exchange Administrator",
+              "userPrincipalName": null
+            }
+          ]
+        },
+        {
+          "id": "ae-02",
+          "activityDisplayName": "Add member to role",
+          "activityDateTime": "2026-10-24T22:15:00Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000006",
+            "userPrincipalName": "vendor.ops_partner.example#EXT#@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "00000000-0000-4000-8000-000000000006",
+              "type": "User",
+              "displayName": null,
+              "userPrincipalName": "vendor.ops_partner.example#EXT#@westmark.example"
+            },
+            {
+              "id": "194ae4cb-b126-40b2-bd5b-6091b380977d",
+              "type": "Role",
+              "displayName": "Security Administrator",
+              "userPrincipalName": null
+            }
+          ]
+        },
+        {
+          "id": "ae-03",
+          "activityDisplayName": "Add member to role requested (PIM activation)",
+          "activityDateTime": "2026-10-28T08:00:00Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000004",
+            "userPrincipalName": "sam.ortiz@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "00000000-0000-4000-8000-000000000004",
+              "type": "User",
+              "displayName": null,
+              "userPrincipalName": "sam.ortiz@westmark.example"
+            },
+            {
+              "id": "62e90394-69f5-4237-9190-012177145e10",
+              "type": "Role",
+              "displayName": "Global Administrator",
+              "userPrincipalName": null
+            }
+          ]
+        },
+        {
+          "id": "ae-04",
+          "activityDisplayName": "Add member to role completed (PIM activation)",
+          "activityDateTime": "2026-10-28T08:00:05Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": null,
+            "userPrincipalName": null,
+            "app": "MS-PIM"
+          },
+          "targetResources": [
+            {
+              "id": "00000000-0000-4000-8000-000000000004",
+              "type": "User",
+              "displayName": null,
+              "userPrincipalName": "sam.ortiz@westmark.example"
+            },
+            {
+              "id": "62e90394-69f5-4237-9190-012177145e10",
+              "type": "Role",
+              "displayName": "Global Administrator",
+              "userPrincipalName": null
+            }
+          ]
+        },
+        {
+          "id": "ae-05",
+          "activityDisplayName": "Add member to role",
+          "activityDateTime": "2026-10-30T13:30:00Z",
+          "result": "failure",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000007",
+            "userPrincipalName": "jo.park@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "00000000-0000-4000-8000-000000000007",
+              "type": "User",
+              "displayName": null,
+              "userPrincipalName": "jo.park@westmark.example"
+            },
+            {
+              "id": "62e90394-69f5-4237-9190-012177145e10",
+              "type": "Role",
+              "displayName": "Global Administrator",
+              "userPrincipalName": null
             }
           ]
         }
@@ -888,6 +1115,44 @@
           "principalId": null,
           "resourceId": "00000000-0000-4000-8000-000000000605",
           "scope": "Files.ReadWrite.All"
+        }
+      ]
+    },
+    "AppOwners": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "servicePrincipalId": "00000000-0000-4000-8000-000000000102",
+          "displayName": "Westmark Provisioning",
+          "owners": []
+        },
+        {
+          "servicePrincipalId": "00000000-0000-4000-8000-000000000603",
+          "displayName": "Westmark Intranet",
+          "owners": []
+        },
+        {
+          "servicePrincipalId": "00000000-0000-4000-8000-000000000606",
+          "displayName": "Westmark HR Sync",
+          "owners": [
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000008",
+              "displayName": "New Hire",
+              "userPrincipalName": "new.hire@westmark.example"
+            }
+          ]
+        },
+        {
+          "servicePrincipalId": "00000000-0000-4000-8000-000000000607",
+          "displayName": "Westmark Backup",
+          "owners": []
+        },
+        {
+          "servicePrincipalId": "00000000-0000-4000-8000-000000000608",
+          "displayName": "Old Reporting Connector",
+          "owners": []
         }
       ]
     },
