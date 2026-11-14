@@ -55,7 +55,12 @@ BeforeAll {
             '/v1.0/groups/g1/owners?$select=id,displayName,userPrincipalName&$top=999' = ConvertTo-Page @(
                 [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; displayName = 'A'; userPrincipalName = 'a@westmark.example' })
             $RolePolicyUri = ConvertTo-Page @([pscustomobject]@{ id = 'pa1'; policyId = 'pol1'; roleDefinitionId = $GlobalAdminRoleId; scopeId = '/'
-                    policy = [pscustomobject]@{ id = 'pol1'; rules = @([pscustomobject]@{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyExpirationRule'; id = 'Expiration_EndUser_Assignment'; maximumDuration = 'PT8H' }) } })
+                    policy = [pscustomobject]@{ id = 'pol1'; rules = @(
+                            [pscustomobject]@{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyExpirationRule'; id = 'Expiration_EndUser_Assignment'; isExpirationRequired = $true; maximumDuration = 'PT8H'
+                                target = [pscustomobject]@{ caller = 'EndUser'; operations = @('All'); level = 'Assignment' } }
+                            [pscustomobject]@{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyApprovalRule'; id = 'Approval_EndUser_Assignment'
+                                setting = [pscustomobject]@{ isApprovalRequired = $true; approvalMode = 'SingleStage'; approvalStages = @([pscustomobject]@{ approvalStageTimeOutInDays = 1; primaryApprovers = @() }) } }
+                            [pscustomobject]@{ '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyNotificationRule'; id = 'Notification_Admin_Admin_Eligibility'; notificationType = 'Email'; notificationRecipients = @() }) } })
             $RoleAuditUri = ConvertTo-Page @([pscustomobject]@{ id = 'ae1'; category = 'RoleManagement'; activityDisplayName = 'Add member to role'; activityDateTime = '2026-10-01T00:00:00Z'; result = 'success'
                     loggedByService = 'Core Directory'; additionalDetails = @(); initiatedBy = [pscustomobject]@{ user = [pscustomobject]@{ id = 'u1'; userPrincipalName = 'a@westmark.example'; ipAddress = '192.0.2.1' }; app = $null }
                     targetResources = @([pscustomobject]@{ id = 'u2'; type = 'User'; userPrincipalName = 'b@westmark.example'; modifiedProperties = @() }) })
@@ -204,6 +209,16 @@ Describe 'Get-TenantSnapshot' {
         $s.Datasets.RolePolicies.Items[0].roleDefinitionId | Should -Be $GlobalAdminRoleId
         , $s.Datasets.RolePolicies.Items[0].rules | Should -BeOfType [object[]]
         $s.Datasets.RolePolicies.Items[0].rules[0].maximumDuration | Should -Be 'PT8H'
+    }
+
+    It 'keeps only the activation rules ROLE-10 reads, and only their fields' {
+        # Regression: the full policies made a live snapshot five times its size.
+        $s = Get-Collected
+        $rules = @($s.Datasets.RolePolicies.Items[0].rules)
+        @($rules | ForEach-Object id) | Should -Be @('Expiration_EndUser_Assignment', 'Approval_EndUser_Assignment')
+        $rules[1].setting.isApprovalRequired | Should -BeTrue
+        @($rules[1].setting.PSObject.Properties.Name) | Should -Be @('isApprovalRequired')
+        @($rules[0].PSObject.Properties.Name) | Should -Not -Contain 'target'
     }
 
     It 'marks PIM policies NotLicensed without P2' {

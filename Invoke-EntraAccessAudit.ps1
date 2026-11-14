@@ -126,6 +126,9 @@
                        activation rules, ROLE-11 owners of role-holding
                        groups, SVC-05 owners of apps with high-risk access.
                        No new scope. Snapshot schema 4.
+    0.4.1  2026-11-13  PIM policies keep only the four activation rules and
+                       the fields ROLE-10 reads, so a snapshot is about a
+                       fifth of the size.
 #>
 
 [CmdletBinding()]
@@ -142,7 +145,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.4.0'
+$EntraAccessAuditVersion = '0.4.1'
 $SnapshotSchemaVersion = 4
 
 # The delegated scopes the collector asks for. All read-only.
@@ -175,6 +178,15 @@ $AppAdminRoleIds = @(
 # Datasets added in snapshot schema 4. An older snapshot lacks them, and the
 # checks that need them are Skipped with that reason.
 $Schema4Datasets = @('RoleAuditEvents', 'RolePolicies', 'RoleGroupOwners', 'AppOwners')
+
+# The PIM policy rules ROLE-10 reads: what activation needs, and how long it
+# lasts. The collector keeps only these.
+$RolePolicyRuleIds = @(
+    'Enablement_EndUser_Assignment'
+    'AuthenticationContext_EndUser_Assignment'
+    'Approval_EndUser_Assignment'
+    'Expiration_EndUser_Assignment'
+)
 
 # The tenants Microsoft's own apps belong to. An app owned by any other tenant
 # but this one comes from another organization.
@@ -593,14 +605,26 @@ function Get-RoleGroupOwner {
 
 function Get-RolePolicy {
     # PIM's settings for each directory role: what activating it needs and how
-    # long it lasts. Kept to the role and its rules.
+    # long it lasts. Kept to the role and the four activation rules ROLE-10
+    # reads, with only the fields it reads: the full policies run to about
+    # 6 KB a role, across every built-in role.
     $ds = Read-Dataset -Uri "/v1.0/policies/roleManagementPolicyAssignments?`$filter=scopeId%20eq%20'/'%20and%20scopeType%20eq%20'DirectoryRole'&`$expand=policy(`$expand=rules)" -Needs 'Microsoft Entra ID P2 (PIM)'
     if ($ds.Status -ne 'Collected') { return $ds }
     $ds.Items = @(foreach ($a in $ds.Items) {
             [ordered]@{
                 roleDefinitionId = Get-Value $a 'roleDefinitionId'
                 policyId         = Get-Value $a 'policyId'
-                rules            = @(Get-Value $a 'policy', 'rules' | Where-Object { $null -ne $_ })
+                rules            = @(foreach ($r in @(Get-Value $a 'policy', 'rules')) {
+                        if ($null -eq $r -or $RolePolicyRuleIds -notcontains "$(Get-Value $r 'id')") { continue }
+                        [ordered]@{
+                            '@odata.type'   = Get-Value $r '@odata.type'
+                            id              = Get-Value $r 'id'
+                            enabledRules    = @(Get-Value $r 'enabledRules' | Where-Object { $null -ne $_ })
+                            isEnabled       = Get-Value $r 'isEnabled'
+                            maximumDuration = Get-Value $r 'maximumDuration'
+                            setting         = [ordered]@{ isApprovalRequired = Get-Value $r 'setting', 'isApprovalRequired' }
+                        }
+                    })
             }
         })
     return $ds
