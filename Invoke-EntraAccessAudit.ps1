@@ -116,6 +116,9 @@
                        apps from other organizations with high-risk
                        permissions, SVC-04 disabled apps still holding
                        access. Snapshot schema 3.
+    0.3.1  2026-11-13  No obsolete-parameter warning when writing the CSV
+                       report on PowerShell 7. Test and lint scripts end with
+                       a summary banner, table and RESULT bar.
 #>
 
 [CmdletBinding()]
@@ -132,7 +135,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.3.0'
+$EntraAccessAuditVersion = '0.3.1'
 $SnapshotSchemaVersion = 3
 
 # The delegated scopes the collector asks for. All read-only.
@@ -1637,7 +1640,11 @@ function Write-AuditReport {
 
     [IO.File]::WriteAllText("$base.html", (ConvertTo-AuditHtml -Results $Results -Snapshot $Snapshot -AuditProfile $AuditProfile), $utf8)
 
-    $csv = @(ConvertTo-AuditCsvRow $Results | ConvertTo-Csv -NoTypeInformation)
+    # 5.1 adds a type line unless told not to; 7 never does, and newer 7
+    # releases warn that -NoTypeInformation is obsolete.
+    $csvArgs = @{}
+    if ($PSVersionTable.PSVersion.Major -lt 6) { $csvArgs.NoTypeInformation = $true }
+    $csv = @(ConvertTo-AuditCsvRow $Results | ConvertTo-Csv @csvArgs)
     [IO.File]::WriteAllText("$base.csv", (($csv -join "`r`n") + "`r`n"), $utf8)
 
     $datasets = [ordered]@{}

@@ -17,7 +17,12 @@ Describe 'Write-AuditReport' {
         $script:Snapshot = Read-Snapshot -Path $FixturePath
         $script:Results = @(Invoke-AuditCheck -Snapshot $Snapshot -AuditProfile $Westmark)
         $script:Out = Join-Path $TestDrive 'reports'
-        $script:Files = @(Write-AuditReport -Results $Results -Snapshot $Snapshot -AuditProfile $Westmark -Path $Out)
+        $script:Files = @(Write-AuditReport -Results $Results -Snapshot $Snapshot -AuditProfile $Westmark -Path $Out -WarningVariable script:ReportWarnings -WarningAction SilentlyContinue)
+    }
+
+    It 'writes the reports without a warning' {
+        # Regression: PowerShell 7.7 warned that -NoTypeInformation is obsolete.
+        @($ReportWarnings) | Should -HaveCount 0
     }
 
     It 'writes the HTML, CSV and JSON reports, named by collection time' {

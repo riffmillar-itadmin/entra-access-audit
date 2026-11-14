@@ -17,10 +17,12 @@
     edition that can't be found fails the run rather than reporting half a
     result.
 
-    Ends with a table of what was tested: edition, fixtures, and the passed,
-    failed, skipped and not-run counts. Exit code 0 only when every test passed
-    and none was skipped or left unrun: a test that can't apply must say so,
-    not pass.
+    Ends with a summary block that is easy to find and copy: a coloured banner
+    with the pass, fail and skip counts, the target, run time and PowerShell
+    version, a table of each edition's counts, and a RESULT bar. A run that
+    stops with an error still prints the summary, counted as a failure. Exit
+    code 0 only when every test passed and none was skipped or left unrun: a
+    test that can't apply must say so, not pass.
 
 .PARAMETER BothEditions
     Run the suite under powershell.exe (5.1) and pwsh (7). Use it before every
@@ -52,12 +54,38 @@ $ErrorActionPreference = 'Stop'
 
 $version = '6.2.0'
 $fixtures = 'westmark.snapshot.json + westmark.psd1 (fictional tenant); fake Graph'
+$target = "tests\*.Tests.ps1 with Pester $version on the fictional Westmark tenant and a fake Microsoft Graph"
+. (Join-Path $PSScriptRoot 'tools/Write-TestSummary.ps1')
 
-function Write-SummaryTable {
+function Get-ResultRow {
+    # One row of the summary table. Counts that weren't produced show as '-'.
+    param([string]$Edition, $Counts, [string]$Result, [string]$Notes)
+    $row = [ordered]@{ Suite = 'Pester'; Edition = $Edition }
+    foreach ($name in 'Version', 'Fixtures', 'Passed', 'Failed', 'Skipped', 'NotRun') {
+        $row[$name] = if ($Counts) { $Counts.$name } else { '-' }
+    }
+    $row.Result = $Result
+    $row.Notes = $Notes
+    [pscustomobject]$row
+}
+
+function Write-Summary {
+    # Adds up the rows and prints the summary block. A row that didn't pass
+    # with no failed test behind it (a missing edition, a run that stopped, a
+    # skipped or unrun test, a file that didn't load) counts as one failure,
+    # so the banner can never be green when the run failed.
     param($Rows)
-    Write-Host "`n==== summary ====" -ForegroundColor Cyan
-    # A wide line so the notes column isn't cut to the window.
-    $Rows | Format-Table -AutoSize -Wrap | Out-String -Width 300 | Write-Host
+    # Counts that weren't produced are '-', which count as 0.
+    $num = { param($Value) if ($Value -is [ValueType]) { [int]$Value } else { 0 } }
+    $pass = 0; $fail = 0; $skip = 0
+    foreach ($row in @($Rows)) {
+        $pass += & $num $row.Passed
+        $skip += & $num $row.Skipped
+        $failedTests = & $num $row.Failed
+        $fail += $failedTests
+        if ($row.Result -ne 'PASS' -and $failedTests -eq 0) { $fail++ }
+    }
+    Write-TestSummary -Title 'Test-EntraAccessAudit' -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip $skip
 }
 
 if ($BothEditions) {
@@ -65,7 +93,7 @@ if ($BothEditions) {
         Write-Host "`n==== $exe ====" -ForegroundColor Cyan
         if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
             Write-Host "$exe not found, so this edition was not tested." -ForegroundColor Red
-            [pscustomobject][ordered]@{ Edition = $exe; Version = '-'; Fixtures = '-'; Passed = '-'; Failed = '-'; Skipped = '-'; NotRun = '-'; Result = 'MISSING'; Notes = 'Edition not installed' }
+            Get-ResultRow -Edition $exe -Result 'MISSING' -Notes 'Edition not installed'
             continue
         }
         $out = Join-Path ([IO.Path]::GetTempPath()) ("eaa-result-{0}.json" -f [guid]::NewGuid().ToString('N'))
@@ -80,36 +108,36 @@ if ($BothEditions) {
             Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
         }
         $result = if ($code -eq 0 -and $r) { 'PASS' } elseif ($r) { "FAIL (exit $code)" } else { "FAIL (exit $code, no counts written)" }
-        [pscustomobject][ordered]@{
-            Edition  = $exe
-            Version  = $(if ($r) { $r.Version } else { '-' })
-            Fixtures = $(if ($r) { $r.Fixtures } else { '-' })
-            Passed   = $(if ($r) { $r.Passed } else { '-' })
-            Failed   = $(if ($r) { $r.Failed } else { '-' })
-            Skipped  = $(if ($r) { $r.Skipped } else { '-' })
-            NotRun   = $(if ($r) { $r.NotRun } else { '-' })
-            Result   = $result
-            Notes    = $(if ($r) { $r.Notes } else { 'The run stopped before writing its counts.' })
-        }
+        Get-ResultRow -Edition $exe -Counts $r -Result $result -Notes $(if ($r) { $r.Notes } else { 'The run stopped before writing its counts.' })
     }
-    Write-SummaryTable $rows
+    Write-Summary @($rows)
     if (@($rows | Where-Object Result -ne 'PASS').Count -gt 0) { exit 1 }
     exit 0
 }
 
-if ($PackagePath) { $PackagePath = (Resolve-Path -LiteralPath $PackagePath).Path }
-if (-not (Get-Module -ListAvailable Pester | Where-Object { "$($_.Version)" -eq $version })) {
-    . (Join-Path $PSScriptRoot 'tools/Install-PinnedModule.ps1')
-    Install-PinnedModule -Name Pester -Version $version -PackagePath $PackagePath `
-        -GalleryParameters @{ SkipPublisherCheck = $true; AllowClobber = $true }
-}
-Import-Module Pester -RequiredVersion $version
+try {
+    if ($PackagePath) { $PackagePath = (Resolve-Path -LiteralPath $PackagePath).Path }
+    if (-not (Get-Module -ListAvailable Pester | Where-Object { "$($_.Version)" -eq $version })) {
+        . (Join-Path $PSScriptRoot 'tools/Install-PinnedModule.ps1')
+        Install-PinnedModule -Name Pester -Version $version -PackagePath $PackagePath `
+            -GalleryParameters @{ SkipPublisherCheck = $true; AllowClobber = $true }
+    }
+    Import-Module Pester -RequiredVersion $version
 
-$config = New-PesterConfiguration
-$config.Run.Path = Join-Path $PSScriptRoot 'tests'
-$config.Run.PassThru = $true
-$config.Output.Verbosity = 'Normal'
-$result = Invoke-Pester -Configuration $config
+    $config = New-PesterConfiguration
+    $config.Run.Path = Join-Path $PSScriptRoot 'tests'
+    $config.Run.PassThru = $true
+    $config.Output.Verbosity = 'Normal'
+    $result = Invoke-Pester -Configuration $config
+} catch {
+    # A run that stops still reports, as a failure, with the reason.
+    Write-Host "The test run stopped: $($_.Exception.Message)" -ForegroundColor Red
+    $row = Get-ResultRow -Edition "$($PSVersionTable.PSEdition)" -Result 'FAIL (error)' -Notes "The run stopped: $($_.Exception.Message)"
+    $row.Version = "$($PSVersionTable.PSVersion)"
+    if ($ResultPath) { [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+    else { Write-Summary @($row) }
+    exit 1
+}
 
 $notes = [Collections.Generic.List[string]]::new()
 if ($result.FailedCount -gt 0) { $notes.Add("Failed: $(@($result.Failed | ForEach-Object { $_.ExpandedPath }) -join '; ')") }
@@ -120,20 +148,18 @@ if (@($result.Containers | Where-Object { $_.Result -eq 'Failed' -and $_.FailedC
 $failed = [int]($notes.Count -gt 0)
 if ($notes.Count -eq 0) { $notes.Add('All tests passed.') }
 
-$row = [pscustomobject][ordered]@{
-    Edition  = "$($PSVersionTable.PSEdition)"
+$counts = [pscustomobject]@{
     Version  = "$($PSVersionTable.PSVersion)"
     Fixtures = $fixtures
     Passed   = $result.PassedCount
     Failed   = $result.FailedCount
     Skipped  = $result.SkippedCount
     NotRun   = $result.NotRunCount
-    Result   = $(if ($failed) { 'FAIL' } else { 'PASS' })
-    Notes    = $notes -join ' '
 }
+$row = Get-ResultRow -Edition "$($PSVersionTable.PSEdition)" -Counts $counts -Result $(if ($failed) { 'FAIL' } else { 'PASS' }) -Notes ($notes -join ' ')
 if ($ResultPath) {
     [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 } else {
-    Write-SummaryTable @($row)
+    Write-Summary @($row)
 }
 exit $failed

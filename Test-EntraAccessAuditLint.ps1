@@ -20,7 +20,11 @@
 
     Inside GitHub Actions each finding becomes an annotation on its file and
     line; anywhere else it prints file:line [rule] message. Either way the run
-    ends with a table of the edition, files linted, findings and result.
+    ends with a summary block that is easy to find and copy: a coloured banner
+    with the pass, fail and skip counts (one per edition linted), the target,
+    run time and PowerShell version, a table of files, findings and result per
+    edition, and a RESULT bar. A run that stops with an error still prints the
+    summary, counted as a failure.
 
 .PARAMETER BothEditions
     Lint under powershell.exe (5.1) and pwsh (7), with one table for both. Use
@@ -50,11 +54,27 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $version = '1.25.0'
+$target = "Every .ps1, .psm1 and .psd1 in the repository, with PSScriptAnalyzer $version and PSScriptAnalyzerSettings.psd1"
+. (Join-Path $PSScriptRoot 'tools/Write-TestSummary.ps1')
 
-function Write-SummaryTable {
+function Get-LintRow {
+    # One row of the summary table. Counts that weren't produced show as '-'.
+    param([string]$Edition, $Counts, [string]$Result, [string]$Notes)
+    $row = [ordered]@{ Suite = 'Lint'; Edition = $Edition }
+    foreach ($name in 'Version', 'Analyzer', 'Files', 'Findings', 'Blocking') {
+        $row[$name] = if ($Counts) { $Counts.$name } else { '-' }
+    }
+    $row.Result = $Result
+    $row.Notes = $Notes
+    [pscustomobject]$row
+}
+
+function Write-Summary {
+    # Each edition linted is one pass or one failure.
     param($Rows)
-    Write-Host "`n==== lint summary ====" -ForegroundColor Cyan
-    $Rows | Format-Table -AutoSize -Wrap | Out-String -Width 300 | Write-Host
+    $pass = @($Rows | Where-Object { $_.Result -eq 'PASS' }).Count
+    $fail = @($Rows).Count - $pass
+    Write-TestSummary -Title 'Test-EntraAccessAuditLint' -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip 0
 }
 
 if ($BothEditions) {
@@ -62,7 +82,7 @@ if ($BothEditions) {
         Write-Host "`n==== $exe ====" -ForegroundColor Cyan
         if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
             Write-Host "$exe not found, so this edition was not linted." -ForegroundColor Red
-            [pscustomobject][ordered]@{ Edition = $exe; Version = '-'; Analyzer = '-'; Files = '-'; Findings = '-'; Blocking = '-'; Result = 'MISSING' }
+            Get-LintRow -Edition $exe -Result 'MISSING' -Notes 'Edition not installed'
             continue
         }
         $out = Join-Path ([IO.Path]::GetTempPath()) ("eaa-lint-{0}.json" -f [guid]::NewGuid().ToString('N'))
@@ -76,62 +96,68 @@ if ($BothEditions) {
             catch { Write-Host "Couldn't read the $exe result file: $($_.Exception.Message)" -ForegroundColor Red }
             Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
         }
-        [pscustomobject][ordered]@{
-            Edition  = $exe
-            Version  = $(if ($r) { $r.Version } else { '-' })
-            Analyzer = $(if ($r) { $r.Analyzer } else { '-' })
-            Files    = $(if ($r) { $r.Files } else { '-' })
-            Findings = $(if ($r) { $r.Findings } else { '-' })
-            Blocking = $(if ($r) { $r.Blocking } else { '-' })
-            Result   = $(if ($code -eq 0 -and $r) { 'PASS' } elseif ($r) { "FAIL (exit $code)" } else { "FAIL (exit $code, no counts written)" })
-        }
+        $result = if ($code -eq 0 -and $r) { 'PASS' } elseif ($r) { "FAIL (exit $code)" } else { "FAIL (exit $code, no counts written)" }
+        Get-LintRow -Edition $exe -Counts $r -Result $result -Notes $(if ($r) { $r.Notes } else { 'The run stopped before writing its counts.' })
     }
-    Write-SummaryTable $rows
+    Write-Summary @($rows)
     if (@($rows | Where-Object Result -ne 'PASS').Count -gt 0) { exit 1 }
     exit 0
 }
 
-if (-not (Get-Module -ListAvailable PSScriptAnalyzer | Where-Object Version -eq $version)) {
-    . (Join-Path $PSScriptRoot 'tools/Install-PinnedModule.ps1')
-    Install-PinnedModule -Name PSScriptAnalyzer -Version $version -PackagePath $PackagePath
-}
-Import-Module PSScriptAnalyzer -RequiredVersion $version
-
-$settings = Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'
-$findings = @(Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $settings)
-# Filtered by extension rather than -Include, which Windows PowerShell 5.1
-# ignores with -LiteralPath and so counted every file.
-$files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' })
-$inActions = $env:GITHUB_ACTIONS -eq 'true'
-
-Push-Location $PSScriptRoot
 try {
-    foreach ($f in $findings) {
-        # repo-relative with forward slashes, so GitHub links the annotation to the file
-        $file = (Resolve-Path -Relative $f.ScriptPath) -replace '^\.[\\/]', '' -replace '\\', '/'
-        if ($inActions) {
-            $level = if ("$($f.Severity)" -eq 'Information') { 'notice' } else { 'error' }
-            Write-Output "::$level file=$file,line=$($f.Line)::[$($f.RuleName)] $($f.Message)"
-        } else {
-            Write-Output "$($file):$($f.Line) [$($f.Severity)] [$($f.RuleName)] $($f.Message)"
-        }
+    if (-not (Get-Module -ListAvailable PSScriptAnalyzer | Where-Object Version -eq $version)) {
+        . (Join-Path $PSScriptRoot 'tools/Install-PinnedModule.ps1')
+        Install-PinnedModule -Name PSScriptAnalyzer -Version $version -PackagePath $PackagePath
     }
-} finally { Pop-Location }
+    Import-Module PSScriptAnalyzer -RequiredVersion $version
+
+    $settings = Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'
+    $findings = @(Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $settings)
+    # Filtered by extension rather than -Include, which Windows PowerShell 5.1
+    # ignores with -LiteralPath and so counted every file.
+    $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' })
+    $inActions = $env:GITHUB_ACTIONS -eq 'true'
+
+    Push-Location $PSScriptRoot
+    try {
+        foreach ($f in $findings) {
+            # repo-relative with forward slashes, so GitHub links the annotation to the file
+            $file = (Resolve-Path -Relative $f.ScriptPath) -replace '^\.[\\/]', '' -replace '\\', '/'
+            if ($inActions) {
+                $level = if ("$($f.Severity)" -eq 'Information') { 'notice' } else { 'error' }
+                Write-Output "::$level file=$file,line=$($f.Line)::[$($f.RuleName)] $($f.Message)"
+            } else {
+                Write-Output "$($file):$($f.Line) [$($f.Severity)] [$($f.RuleName)] $($f.Message)"
+            }
+        }
+    } finally { Pop-Location }
+} catch {
+    # A run that stops still reports, as a failure, with the reason.
+    Write-Host "The lint run stopped: $($_.Exception.Message)" -ForegroundColor Red
+    $row = Get-LintRow -Edition "$($PSVersionTable.PSEdition)" -Result 'FAIL (error)' -Notes "The run stopped: $($_.Exception.Message)"
+    $row.Version = "$($PSVersionTable.PSVersion)"
+    if ($ResultPath) { [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json), [Text.UTF8Encoding]::new($false)) }
+    else { Write-Summary @($row) }
+    exit 1
+}
 
 $blocking = @($findings | Where-Object { "$($_.Severity)" -in 'Error', 'Warning', 'ParseError' })
 $failed = [int]($blocking.Count -gt 0 -or $files.Count -eq 0)
-$row = [pscustomobject][ordered]@{
-    Edition  = "$($PSVersionTable.PSEdition)"
+$counts = [pscustomobject]@{
     Version  = "$($PSVersionTable.PSVersion)"
     Analyzer = $version
     Files    = $files.Count
     Findings = $findings.Count
     Blocking = $blocking.Count
-    Result   = $(if ($files.Count -eq 0) { 'FAIL (no files linted)' } elseif ($failed) { 'FAIL' } else { 'PASS' })
 }
+$notes = if ($files.Count -eq 0) { 'No PowerShell files found to lint.' }
+    elseif ($blocking.Count -gt 0) { "Blocking: $(@($blocking | ForEach-Object { $_.RuleName } | Sort-Object -Unique) -join ', ')" }
+    elseif ($findings.Count -gt 0) { 'Information findings only; they do not fail the run.' }
+    else { 'No findings.' }
+$row = Get-LintRow -Edition "$($PSVersionTable.PSEdition)" -Counts $counts -Result $(if ($files.Count -eq 0) { 'FAIL (no files linted)' } elseif ($failed) { 'FAIL' } else { 'PASS' }) -Notes $notes
 if ($ResultPath) {
     [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 } else {
-    Write-SummaryTable @($row)
+    Write-Summary @($row)
 }
 exit $failed
