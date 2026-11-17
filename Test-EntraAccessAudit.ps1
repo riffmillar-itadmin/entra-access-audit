@@ -74,7 +74,7 @@ function Write-Summary {
     # with no failed test behind it (a missing edition, a run that stopped, a
     # skipped or unrun test, a file that didn't load) counts as one failure,
     # so the banner can never be green when the run failed.
-    param($Rows)
+    param($Rows, [string]$Title = 'Test-EntraAccessAudit.ps1')
     # Counts that weren't produced are '-', which count as 0.
     $num = { param($Value) if ($Value -is [ValueType]) { [int]$Value } else { 0 } }
     $pass = 0; $fail = 0; $skip = 0
@@ -85,7 +85,7 @@ function Write-Summary {
         $fail += $failedTests
         if ($row.Result -ne 'PASS' -and $failedTests -eq 0) { $fail++ }
     }
-    Write-TestSummary -Title 'Test-EntraAccessAudit' -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip $skip
+    Write-TestSummary -Title $Title -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip $skip
 }
 
 if ($BothEditions) {
@@ -110,7 +110,7 @@ if ($BothEditions) {
         $result = if ($code -eq 0 -and $r) { 'PASS' } elseif ($r) { "FAIL (exit $code)" } else { "FAIL (exit $code, no counts written)" }
         Get-ResultRow -Edition $exe -Counts $r -Result $result -Notes $(if ($r) { $r.Notes } else { 'The run stopped before writing its counts.' })
     }
-    Write-Summary @($rows)
+    Write-Summary @($rows) 'Test-EntraAccessAudit.ps1 -BothEditions'
     if (@($rows | Where-Object Result -ne 'PASS').Count -gt 0) { exit 1 }
     exit 0
 }
@@ -146,7 +146,6 @@ if ($result.NotRunCount -gt 0) { $notes.Add('A test that did not run fails the r
 if ($result.PassedCount -eq 0) { $notes.Add('No test passed.') }
 if (@($result.Containers | Where-Object { $_.Result -eq 'Failed' -and $_.FailedCount -eq 0 }).Count -gt 0) { $notes.Add('A test file failed to load.') }
 $failed = [int]($notes.Count -gt 0)
-if ($notes.Count -eq 0) { $notes.Add('All tests passed.') }
 
 $counts = [pscustomobject]@{
     Version  = "$($PSVersionTable.PSVersion)"

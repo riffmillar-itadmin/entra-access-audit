@@ -137,6 +137,9 @@
                        ROLE-12 privileged roles assigned outside PIM. ROLE-09
                        no longer lists a self-grant twice when PIM logs it
                        too. No new scope. Snapshot schema 5.
+    0.5.1  2026-11-16  Test and lint summaries use the JobSweep layout: one
+                       banner line with script, status and counts, a PS line,
+                       and a Notes column only when a row needs one.
 #>
 
 [CmdletBinding()]
@@ -153,7 +156,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.5.0'
+$EntraAccessAuditVersion = '0.5.1'
 $SnapshotSchemaVersion = 5
 
 # The delegated scopes the collector asks for. All read-only.

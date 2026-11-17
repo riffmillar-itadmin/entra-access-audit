@@ -283,12 +283,14 @@ case and a Skipped case each; the collector runs against a fake Microsoft
 Graph that pages, refuses licences and denies scopes. A skipped or unrun test
 fails the run.
 
-Both scripts end with the same summary block, easy to find and to copy: a
-banner with the pass, fail and skip counts (green when all passed, dark yellow
-with skips, red on any failure), the target, run time and PowerShell version, a
+Both scripts end with the same summary block as the JobSweep and endpoint scan
+suites, easy to find and to copy: a full-width banner with the script name,
+status and pass, fail and skip counts (green when all passed, dark yellow with
+skips, red on any failure), the target, run time and PowerShell version, a
 table with a row per edition, and a RESULT bar. The test table shows the
 fixtures and the passed, failed, skipped and not-run counts; the lint table
-shows files linted, findings and blocking findings. A missing edition, or a run
+shows files linted, findings and blocking findings. A Notes column appears only when a row has
+something to explain, such as the tests that failed. A missing edition, or a run
 that stops with an error, still prints the summary and counts as a failure.
 
 Pester 6.2.0 and PSScriptAnalyzer 1.25.0 are pinned, and installed for the
@@ -310,6 +312,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.5.1 | 2026-11-16 | The test and lint scripts' summary uses the same layout as the JobSweep and endpoint scan suites: one banner line with the script name, status and counts, the target, run time and PowerShell version on their own lines, and a RESULT bar. The table keeps its Suite and Fixtures columns, and shows Notes only when a row has something to explain. Tests for the summary block added. |
 | 0.5.0 | 2026-11-16 | Now with 42 checks. New Tenant settings area: TEN-01 user consent to apps, TEN-02 users who can register apps or create tenants, TEN-03 guest access and invitations, TEN-04 text message and voice call sign-in, TEN-05 cross-tenant defaults, TEN-06 break-glass accounts that would fail in an emergency. ROLE-12 privileged roles assigned outside PIM. Fix: ROLE-09 listed a self-grant made outside PIM twice, because PIM logs it a second time. No new scope: the settings are read with `Policy.Read.All`. Snapshot schema 5; on older snapshots TEN-01 to TEN-05 are Skipped. |
 | 0.4.1 | 2026-11-13 | Snapshots keep only the four PIM activation rules ROLE-10 reads, with only the fields it reads, so a live snapshot is about a third of the size. |
 | 0.4.0 | 2026-11-13 | Now with 35 checks. ROLE-07 other privileged roles held permanently, ROLE-08 eligible privileged roles that never expire, ROLE-09 roles granted to oneself (from the directory audit log), ROLE-10 weak PIM activation rules (no MFA, too long, no approval for Global and Privileged Role Administrator; new `MaxActivationHours` setting), ROLE-11 owners of groups that hold privileged roles, SVC-05 owners of apps with high-risk access. No new scope: the audit log, PIM settings and owners are read with scopes the audit already has. Snapshot schema 4; on older snapshots ROLE-09 to ROLE-11 and SVC-05 are Skipped. |
