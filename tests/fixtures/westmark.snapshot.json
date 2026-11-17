@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 4,
-  "ToolVersion": "0.4.0",
+  "SchemaVersion": 5,
+  "ToolVersion": "0.5.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -671,6 +671,56 @@
               "userPrincipalName": null
             }
           ]
+        },
+        {
+          "id": "ae-06",
+          "activityDisplayName": "Add member to role outside of PIM (permanent)",
+          "activityDateTime": "2026-10-21T09:30:00Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000001",
+            "userPrincipalName": "admin.lee@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "29232cdf-9323-42fd-ade2-1d097af3e4de",
+              "type": "Role",
+              "displayName": "Exchange Administrator",
+              "userPrincipalName": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000005",
+              "type": "User",
+              "displayName": "Dana Kim",
+              "userPrincipalName": null
+            }
+          ]
+        },
+        {
+          "id": "ae-07",
+          "activityDisplayName": "Add member to role outside of PIM (permanent)",
+          "activityDateTime": "2026-10-22T09:30:00Z",
+          "result": "success",
+          "initiatedBy": {
+            "userId": "00000000-0000-4000-8000-000000000001",
+            "userPrincipalName": "admin.lee@westmark.example",
+            "app": null
+          },
+          "targetResources": [
+            {
+              "id": "62e90394-69f5-4237-9190-012177145e10",
+              "type": "Role",
+              "displayName": "Global Administrator",
+              "userPrincipalName": null
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000003",
+              "type": "User",
+              "displayName": "Break Glass Two",
+              "userPrincipalName": null
+            }
+          ]
         }
       ]
     },
@@ -1153,6 +1203,90 @@
           "servicePrincipalId": "00000000-0000-4000-8000-000000000608",
           "displayName": "Old Reporting Connector",
           "owners": []
+        }
+      ]
+    },
+    "AuthorizationPolicy": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "allowInvitesFrom": "everyone",
+          "allowEmailVerifiedUsersToJoinOrganization": false,
+          "allowUserConsentForRiskyApps": null,
+          "guestUserRoleId": "10dae51f-b6af-4016-8d66-8c2a99b929b3",
+          "defaultUserRolePermissions": {
+            "allowedToCreateApps": true,
+            "allowedToCreateTenants": false,
+            "permissionGrantPoliciesAssigned": [
+              "ManagePermissionGrantsForSelf.microsoft-user-default-legacy",
+              "ManageChatResourceSpecificConsent"
+            ]
+          }
+        }
+      ]
+    },
+    "AuthMethodsPolicy": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "policyMigrationState": "migrationComplete",
+          "methods": [
+            {
+              "id": "Fido2",
+              "state": "enabled"
+            },
+            {
+              "id": "MicrosoftAuthenticator",
+              "state": "enabled"
+            },
+            {
+              "id": "Sms",
+              "state": "enabled"
+            },
+            {
+              "id": "TemporaryAccessPass",
+              "state": "enabled"
+            },
+            {
+              "id": "Voice",
+              "state": "disabled"
+            },
+            {
+              "id": "Email",
+              "state": "disabled"
+            }
+          ]
+        }
+      ]
+    },
+    "CrossTenantAccess": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "isServiceDefault": true,
+          "automaticUserConsentSettings": {
+            "inboundAllowed": false,
+            "outboundAllowed": false
+          },
+          "b2bDirectConnectInbound": {
+            "usersAndGroups": {
+              "accessType": "blocked",
+              "targets": [
+                "AllUsers"
+              ]
+            }
+          },
+          "b2bDirectConnectOutbound": {
+            "usersAndGroups": {
+              "accessType": "blocked",
+              "targets": [
+                "AllUsers"
+              ]
+            }
+          }
         }
       ]
     },

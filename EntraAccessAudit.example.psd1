@@ -31,8 +31,9 @@
     # Emergency access accounts, by user principal name. They are expected to
     # hold Global Administrator permanently, to be excluded from Conditional
     # Access and to sign in rarely, so ROLE-02, ROLE-07, ROLE-08, ROLE-11,
-    # SVC-05, STALE-01, STALE-02 and CA-05 leave them out. They still count in
-    # ROLE-01, and still need MFA.
+    # ROLE-12, SVC-05, STALE-01, STALE-02 and CA-05 leave them out. They still
+    # count in ROLE-01, and still need MFA. TEN-06 checks that each one would
+    # work in an emergency, and warns when fewer than two are listed.
     BreakGlassAccounts    = @(
         # 'bg.one@westmark.example'
     )

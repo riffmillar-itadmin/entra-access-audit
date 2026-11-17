@@ -81,6 +81,24 @@ BeforeAll {
             '/v1.0/oauth2PermissionGrants' = ConvertTo-Page @([pscustomobject]@{ id = 'pg1'; clientId = 'sp1'; consentType = 'AllPrincipals'; principalId = $null; resourceId = 'graph-sp'; scope = 'User.Read Mail.Send' })
             '/v1.0/identity/conditionalAccess/policies' = ConvertTo-Page @([pscustomobject]@{ id = 'p1'; displayName = 'Policy'; state = 'enabled' })
             '/v1.0/policies/identitySecurityDefaultsEnforcementPolicy' = [pscustomobject]@{ id = 'sd'; isEnabled = $false }
+            '/v1.0/policies/authorizationPolicy' = [pscustomobject]@{ id = 'authorizationPolicy'; displayName = 'Authorization Policy'; allowInvitesFrom = 'everyone'
+                allowedToUseSSPR = $true; allowEmailVerifiedUsersToJoinOrganization = $false; allowUserConsentForRiskyApps = $null; blockMsolPowerShell = $false
+                guestUserRoleId = '10dae51f-b6af-4016-8d66-8c2a99b929b3'
+                defaultUserRolePermissions = [pscustomobject]@{ allowedToCreateApps = $true; allowedToCreateSecurityGroups = $true; allowedToCreateTenants = $false
+                    allowedToReadOtherUsers = $true; permissionGrantPoliciesAssigned = @('ManagePermissionGrantsForSelf.microsoft-user-default-legacy') } }
+            '/v1.0/policies/authenticationMethodsPolicy' = [pscustomobject]@{ id = 'authenticationMethodsPolicy'; policyVersion = '1.5'; policyMigrationState = 'migrationComplete'
+                registrationEnforcement = [pscustomobject]@{ authenticationMethodsRegistrationCampaign = [pscustomobject]@{ state = 'disabled' } }
+                authenticationMethodConfigurations = @(
+                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.smsAuthenticationMethodConfiguration'; id = 'Sms'; state = 'enabled'; excludeTargets = @()
+                        includeTargets = @([pscustomobject]@{ targetType = 'group'; id = 'all_users'; isUsableForSignIn = $false }) }
+                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.voiceAuthenticationMethodConfiguration'; id = 'Voice'; state = 'disabled'; isOfficePhoneAllowed = $false; excludeTargets = @() }) }
+            '/v1.0/policies/crossTenantAccessPolicy/default' = [pscustomobject]@{ isServiceDefault = $true
+                inboundTrust = [pscustomobject]@{ isMfaAccepted = $false }
+                automaticUserConsentSettings = [pscustomobject]@{ inboundAllowed = $false; outboundAllowed = $false }
+                b2bCollaborationInbound = [pscustomobject]@{ usersAndGroups = [pscustomobject]@{ accessType = 'allowed'; targets = @([pscustomobject]@{ target = 'AllUsers'; targetType = 'user' }) } }
+                b2bDirectConnectInbound = [pscustomobject]@{ usersAndGroups = [pscustomobject]@{ accessType = 'blocked'; targets = @([pscustomobject]@{ target = 'AllUsers'; targetType = 'user' }) }
+                    applications = [pscustomobject]@{ accessType = 'blocked'; targets = @([pscustomobject]@{ target = 'AllApplications'; targetType = 'application' }) } }
+                b2bDirectConnectOutbound = [pscustomobject]@{ usersAndGroups = [pscustomobject]@{ accessType = 'blocked'; targets = @([pscustomobject]@{ target = 'AllUsers'; targetType = 'user' }) } } }
         }
     }
 
@@ -126,6 +144,32 @@ Describe 'Get-TenantSnapshot' {
         @($s.Datasets.Users.Items | ForEach-Object id) | Should -Be @('u1', 'u2')
         $Calls | Should -Contain 'page2'
         $s.SchemaVersion | Should -Be $SnapshotSchemaVersion
+    }
+
+    It 'keeps the tenant settings to the fields the checks read' {
+        $s = Get-Collected
+        $auth = @($s.Datasets.AuthorizationPolicy.Items)
+        $auth.Count | Should -Be 1
+        @($auth[0].PSObject.Properties.Name) | Should -Be @('allowInvitesFrom', 'allowEmailVerifiedUsersToJoinOrganization', 'allowUserConsentForRiskyApps', 'guestUserRoleId', 'defaultUserRolePermissions')
+        @($auth[0].defaultUserRolePermissions.permissionGrantPoliciesAssigned) | Should -Be @('ManagePermissionGrantsForSelf.microsoft-user-default-legacy')
+        $auth[0].defaultUserRolePermissions.allowedToCreateApps | Should -BeTrue
+        $methods = @(@($s.Datasets.AuthMethodsPolicy.Items)[0].methods)
+        @($methods | ForEach-Object { "$($_.id)=$($_.state)" }) | Should -Be @('Sms=enabled', 'Voice=disabled')
+        @($methods[0].PSObject.Properties.Name) | Should -Be @('id', 'state')
+        $cross = @($s.Datasets.CrossTenantAccess.Items)[0]
+        @($cross.PSObject.Properties.Name) | Should -Be @('isServiceDefault', 'automaticUserConsentSettings', 'b2bDirectConnectInbound', 'b2bDirectConnectOutbound')
+        $cross.b2bDirectConnectInbound.usersAndGroups.accessType | Should -Be 'blocked'
+        @($cross.b2bDirectConnectInbound.usersAndGroups.targets) | Should -Be @('AllUsers')
+    }
+
+    It 'records a tenant setting it was refused as Denied, and still reads the rest' {
+        $Fail['/v1.0/policies/authenticationMethodsPolicy'] = $Denied
+        $s = Get-Collected
+        $s.Datasets.AuthMethodsPolicy.Status | Should -Be 'Denied'
+        $s.Datasets.AuthMethodsPolicy.Reason | Should -Match 'Authorization_RequestDenied'
+        @($s.Datasets.AuthMethodsPolicy.Items).Count | Should -Be 0
+        $s.Datasets.AuthorizationPolicy.Status | Should -Be 'Collected'
+        $s.Datasets.CrossTenantAccess.Status | Should -Be 'Collected'
     }
 
     It 'sends nothing but the reads it lists' {

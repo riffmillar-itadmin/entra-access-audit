@@ -1,12 +1,12 @@
 # Entra access audit
 
 A read-only PowerShell audit of who can get into a Microsoft Entra ID tenant,
-and how. It reads the tenant through Microsoft Graph and reports on six areas:
+and how. It reads the tenant through Microsoft Graph and reports on seven areas:
 
 - **Privileged roles:** how many Global Administrators there are, roles held
   permanently or eligible with no end date, roles people granted themselves,
-  weak PIM activation rules, owners who can add themselves to a role-holding
-  group, guests and on-premises synced accounts in admin roles, and admins
+  weak PIM activation rules, roles assigned outside PIM, owners who can add
+  themselves to a role-holding group, guests and on-premises synced accounts in admin roles, and admins
   without phishing-resistant MFA. A role held through a group counts for each
   member of the group.
 - **Stale accounts:** enabled members and guests that haven't signed in for 90
@@ -24,6 +24,10 @@ and how. It reads the tenant through Microsoft Graph and reports on six areas:
 - **Conditional Access:** whether MFA is required for everyone and for admins,
   whether legacy authentication is blocked, policies left in report-only mode,
   and who is excluded from them.
+- **Tenant settings:** whether users can consent to apps, register apps or
+  create tenants, what guests can see and who can invite them, whether text
+  message and voice call are allowed for sign-in, cross-tenant defaults open
+  to every organization, and whether the break-glass accounts would work.
 
 It writes an HTML report, a CSV with one row per finding, and a JSON file. It
 runs on Windows PowerShell 5.1 and PowerShell 7, needs only the
@@ -74,7 +78,7 @@ writes only its report files, and a snapshot when you ask for one.
 | `AuditLog.Read.All` | Sign-in activity, the MFA registration report, and role changes in the directory audit log |
 | `RoleManagement.Read.Directory` | Directory role definitions, assignments, PIM eligibility and schedules, and PIM's activation settings for each role |
 | `Application.Read.All` | App registrations and enterprise apps (service principals): their secrets, certificates, owners, publisher and state, and Graph permissions granted to apps |
-| `Policy.Read.All` | Conditional Access policies and security defaults |
+| `Policy.Read.All` | Conditional Access policies, security defaults, the authorization policy (user consent, default user permissions, guest settings), the authentication methods policy and the default cross-tenant access settings |
 | `DelegatedPermissionGrant.Read.All` | Delegated permissions that admins or users consented to for apps |
 | `GroupMember.Read.All` | Members and owners of the groups that hold a directory role |
 
@@ -100,9 +104,10 @@ Some of this data needs a premium licence:
 | Conditional Access policies | Microsoft Entra ID P1 | CA-01 to CA-05 |
 | PIM eligibility and schedules | Microsoft Entra ID P2 | ROLE-01, ROLE-02, ROLE-07 (see below), ROLE-08, ROLE-10 |
 | PIM activation settings | Microsoft Entra ID P2 | ROLE-10 |
+| PIM assignment schedules | Microsoft Entra ID P2 | ROLE-12 (without PIM, every assignment is made outside it) |
 
 The directory audit log needs no licence, but Microsoft keeps it for 7 days
-without P1 and 30 days with it, so ROLE-09 sees only that far back and says so.
+without P1 and 30 days with it, so ROLE-09 and ROLE-12 see only that far back and say so.
 
 When the tenant hasn't got the licence, those checks are **Skipped**, and the
 report says why. Two cases are different:
@@ -129,6 +134,7 @@ report says why. Two cases are different:
 | ROLE-09 | Privileged roles | High | Roles granted to oneself | Fail for a role an account added to itself, directly or through PIM, in the directory audit log. PIM activations of one's own eligibility don't count. |
 | ROLE-10 | Privileged roles | Medium | Weak PIM activation rules for privileged roles | Warn for a privileged role with eligible accounts whose activation needs no MFA or authentication context, lasts longer than `MaxActivationHours` (8), or, for Global and Privileged Role Administrator, needs no approval. |
 | ROLE-11 | Privileged roles | High | Owners of groups that hold privileged roles | Fail for an owner of a role-holding group, who can add themselves to it, unless they are a Global or Privileged Role Administrator or break-glass. |
+| ROLE-12 | Privileged roles | Medium | Privileged roles assigned outside PIM | Warn for a privileged role assigned directly, outside PIM, in the directory audit log, leaving out break-glass accounts. |
 | STALE-01 | Stale accounts | Medium | Enabled members with no recent sign-in | Fail for an enabled member whose last sign-in is older than `StaleDays` (90). |
 | STALE-02 | Stale accounts | Low | Enabled members that never signed in | Fail for an enabled member older than `StaleDays` with no sign-in. |
 | STALE-03 | Stale accounts | Medium | Enabled guests with no recent sign-in | Fail for an enabled guest with no sign-in in `StaleDays`. |
@@ -153,6 +159,12 @@ report says why. Two cases are different:
 | CA-03 | Conditional Access | High | Legacy authentication blocked | Fail unless security defaults are on, or an enabled policy blocks Exchange ActiveSync and other clients for all users. |
 | CA-04 | Conditional Access | Low | Policies left in report-only mode | Warn for each report-only policy. |
 | CA-05 | Conditional Access | Medium | Exclusions from enabled policies | Warn for excluded accounts that aren't break-glass, and for excluded groups and roles. |
+| TEN-01 | Tenant settings | High | Users can consent to apps | Fail when users can consent to any app, or to apps Microsoft flags as risky; Warn for a custom consent policy. Consent for verified publishers and low-impact permissions only, Microsoft's recommendation, passes. |
+| TEN-02 | Tenant settings | Medium | Users can register apps or create tenants | Warn for each of these default user permissions that is on. |
+| TEN-03 | Tenant settings | Medium | Guest access and invitations | Warn when guests have the same directory access as members, anyone including guests can invite guests, or anyone with a verified email can join. |
+| TEN-04 | Tenant settings | Medium | Text message and voice call sign-in methods | Warn for each enabled in the authentication methods policy, and notes when the legacy MFA and SSPR settings still apply. |
+| TEN-05 | Tenant settings | Low | Cross-tenant access defaults | Warn when the defaults allow B2B direct connect, or redeem invitations automatically, for every other organization. |
+| TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, or not an active Global Administrator; Warn when none or only one is listed. |
 
 Privileged roles are Global Administrator and the other built-in roles that
 can take over the tenant or its security, such as Privileged Role
@@ -204,14 +216,16 @@ there, or the file named by `-ProfilePath`. The example documents each setting:
 | `MaxSecretLifetimeDays` | 365 | APP-03 |
 | `MinGlobalAdmins`, `MaxGlobalAdmins` | 2, 4 | ROLE-01 |
 | `MaxActivationHours` | 8 | ROLE-10 |
-| `BreakGlassAccounts` | none | ROLE-02, ROLE-07, ROLE-08, ROLE-11, SVC-05, STALE-01, STALE-02, CA-05 leave them out |
+| `BreakGlassAccounts` | none | ROLE-02, ROLE-07, ROLE-08, ROLE-11, ROLE-12, SVC-05, STALE-01, STALE-02, CA-05 leave them out; TEN-06 checks them |
 | `AcceptedApps` | none | APP-04, APP-06, APP-07, SVC-01 to SVC-03 and SVC-05 count them but don't list them |
 | `HighRiskPermissions` | 16 permissions | APP-04, APP-06, APP-07, SVC-03, SVC-05 |
 
 Name your emergency access (break-glass) accounts in `BreakGlassAccounts`.
 They are meant to hold Global Administrator permanently, stay out of
 Conditional Access and sign in rarely, so without this they show up as
-findings. They still count toward ROLE-01 and still need MFA.
+findings. They still count toward ROLE-01 and still need MFA. TEN-06 checks
+that each exists, is enabled and cloud-only, and holds Global Administrator,
+and warns when fewer than two are listed.
 
 A setting the script doesn't know stops the run, so a misspelt one can't be
 silently ignored.
@@ -296,7 +310,8 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
-| 0.4.1 | 2026-11-13 | Snapshots keep only the four PIM activation rules ROLE-10 reads, with only the fields it reads, so a live snapshot is about a fifth of the size. |
+| 0.5.0 | 2026-11-16 | Now with 42 checks. New Tenant settings area: TEN-01 user consent to apps, TEN-02 users who can register apps or create tenants, TEN-03 guest access and invitations, TEN-04 text message and voice call sign-in, TEN-05 cross-tenant defaults, TEN-06 break-glass accounts that would fail in an emergency. ROLE-12 privileged roles assigned outside PIM. Fix: ROLE-09 listed a self-grant made outside PIM twice, because PIM logs it a second time. No new scope: the settings are read with `Policy.Read.All`. Snapshot schema 5; on older snapshots TEN-01 to TEN-05 are Skipped. |
+| 0.4.1 | 2026-11-13 | Snapshots keep only the four PIM activation rules ROLE-10 reads, with only the fields it reads, so a live snapshot is about a third of the size. |
 | 0.4.0 | 2026-11-13 | Now with 35 checks. ROLE-07 other privileged roles held permanently, ROLE-08 eligible privileged roles that never expire, ROLE-09 roles granted to oneself (from the directory audit log), ROLE-10 weak PIM activation rules (no MFA, too long, no approval for Global and Privileged Role Administrator; new `MaxActivationHours` setting), ROLE-11 owners of groups that hold privileged roles, SVC-05 owners of apps with high-risk access. No new scope: the audit log, PIM settings and owners are read with scopes the audit already has. Snapshot schema 4; on older snapshots ROLE-09 to ROLE-11 and SVC-05 are Skipped. |
 | 0.3.1 | 2026-11-13 | Writing the CSV report no longer shows a warning that `-NoTypeInformation` is obsolete on newer PowerShell 7 releases. The parameter is passed only on 5.1, which needs it. The test and lint scripts end with a coloured summary banner, table and RESULT bar that copy as plain text, and still print it, as a failure, when a run stops with an error. |
 | 0.3.0 | 2026-11-12 | Now with 29 checks. New Service accounts area: SVC-01 secrets and certificates on enterprise apps, SVC-02 apps in privileged roles, SVC-03 apps from other organizations with high-risk permissions, SVC-04 disabled apps that still hold access. No new scope: service principal credentials, publisher and state are read with `Application.Read.All`. Snapshot schema 3; on older snapshots SVC-01, SVC-03 and SVC-04 are Skipped. The HTML report lists areas in check order, so a new area can't be left out. |
