@@ -71,10 +71,10 @@ function Get-LintRow {
 
 function Write-Summary {
     # Each edition linted is one pass or one failure.
-    param($Rows)
+    param($Rows, [string]$Title = 'Test-EntraAccessAuditLint.ps1')
     $pass = @($Rows | Where-Object { $_.Result -eq 'PASS' }).Count
     $fail = @($Rows).Count - $pass
-    Write-TestSummary -Title 'Test-EntraAccessAuditLint' -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip 0
+    Write-TestSummary -Title $Title -Target $target -Rows $Rows -Pass $pass -Fail $fail -Skip 0
 }
 
 if ($BothEditions) {
@@ -99,7 +99,7 @@ if ($BothEditions) {
         $result = if ($code -eq 0 -and $r) { 'PASS' } elseif ($r) { "FAIL (exit $code)" } else { "FAIL (exit $code, no counts written)" }
         Get-LintRow -Edition $exe -Counts $r -Result $result -Notes $(if ($r) { $r.Notes } else { 'The run stopped before writing its counts.' })
     }
-    Write-Summary @($rows)
+    Write-Summary @($rows) 'Test-EntraAccessAuditLint.ps1 -BothEditions'
     if (@($rows | Where-Object Result -ne 'PASS').Count -gt 0) { exit 1 }
     exit 0
 }
@@ -153,7 +153,7 @@ $counts = [pscustomobject]@{
 $notes = if ($files.Count -eq 0) { 'No PowerShell files found to lint.' }
     elseif ($blocking.Count -gt 0) { "Blocking: $(@($blocking | ForEach-Object { $_.RuleName } | Sort-Object -Unique) -join ', ')" }
     elseif ($findings.Count -gt 0) { 'Information findings only; they do not fail the run.' }
-    else { 'No findings.' }
+    else { '' }
 $row = Get-LintRow -Edition "$($PSVersionTable.PSEdition)" -Counts $counts -Result $(if ($files.Count -eq 0) { 'FAIL (no files linted)' } elseif ($failed) { 'FAIL' } else { 'PASS' }) -Notes $notes
 if ($ResultPath) {
     [IO.File]::WriteAllText($ResultPath, ($row | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
