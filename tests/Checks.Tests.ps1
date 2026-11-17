@@ -67,12 +67,13 @@ Describe 'The Westmark fixture as it is' {
     It 'gives each check the expected result' {
         $expected = [ordered]@{
             'ROLE-01' = 'Pass'; 'ROLE-02' = 'Fail'; 'ROLE-03' = 'Fail'; 'ROLE-04' = 'Fail'; 'ROLE-05' = 'Fail'; 'ROLE-06' = 'Warn'
-            'ROLE-07' = 'Fail'; 'ROLE-08' = 'Warn'; 'ROLE-09' = 'Fail'; 'ROLE-10' = 'Warn'; 'ROLE-11' = 'Fail'
+            'ROLE-07' = 'Fail'; 'ROLE-08' = 'Warn'; 'ROLE-09' = 'Fail'; 'ROLE-10' = 'Warn'; 'ROLE-11' = 'Fail'; 'ROLE-12' = 'Warn'
             'STALE-01' = 'Fail'; 'STALE-02' = 'Fail'; 'STALE-03' = 'Fail'; 'STALE-04' = 'Warn'
             'MFA-01' = 'Fail'; 'MFA-02' = 'Warn'; 'MFA-03' = 'Fail'
             'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
             'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'; 'SVC-05' = 'Fail'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
+            'TEN-01' = 'Fail'; 'TEN-02' = 'Warn'; 'TEN-03' = 'Warn'; 'TEN-04' = 'Warn'; 'TEN-05' = 'Pass'; 'TEN-06' = 'Pass'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
         foreach ($id in $expected.Keys) { $Fixture[$id].Status | Should -Be $expected[$id] -Because $id }
@@ -362,6 +363,17 @@ Describe 'Privileged roles' {
         $r.Summary | Should -Match '^The audit log holds no role changes to check'
     }
 
+    It 'ROLE-09 counts a self-grant made outside PIM once, though PIM logs it a second time' {
+        $s = Get-Fixture
+        $copy = (Get-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-02' | ConvertTo-Json -Depth 5 | ConvertFrom-Json)
+        $copy.id = 'ae-02-pim'
+        $copy.activityDisplayName = 'Add member to role outside of PIM (permanent)'
+        $s.Datasets.RoleAuditEvents.Items = @($s.Datasets.RoleAuditEvents.Items) + $copy
+        $r = (Get-Result $s)['ROLE-09']
+        $r.Findings.Count | Should -Be 1
+        $r.Findings[0].Detail | Should -Be 'Add member to role: Security Administrator, 2026-10-24'
+    }
+
     It 'ROLE-09 is skipped without the audit log' {
         $s = Get-Fixture; Set-NotCollected $s 'RoleAuditEvents' 'Denied'
         (Get-Result $s)['ROLE-09'].Status | Should -Be 'Skipped'
@@ -429,12 +441,50 @@ Describe 'Privileged roles' {
         (Get-Result $s)['ROLE-11'].Status | Should -Be 'Skipped'
     }
 
+    It 'ROLE-12 warns on a privileged role assigned outside PIM, leaving out break-glass accounts' {
+        $r = (Get-Result (Get-Fixture))['ROLE-12']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('dana.kim@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Exchange Administrator by admin.lee@westmark.example, 2026-10-21'
+        $r.Summary | Should -Match '1 assignment\(s\) to break-glass accounts weren''t counted'
+    }
+
+    It 'ROLE-12 leaves out roles that are not privileged and failed attempts' {
+        $s = Get-Fixture
+        $e = Get-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-06'
+        $e.targetResources[0].id = '88d8e3e3-8f55-4a1e-953a-9b9898b8876b'
+        $e.targetResources[0].displayName = 'Directory Readers'
+        (Get-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-07').result = 'failure'
+        $r = (Get-Result $s)['ROLE-12']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 assignment\(s\) of roles that aren''t privileged'
+        $r.Summary | Should -Not -Match 'break-glass'
+    }
+
+    It 'ROLE-12 passes when every privileged role went through PIM' {
+        $s = Get-Fixture
+        Remove-FixtureItem $s 'RoleAuditEvents' 'id' 'ae-06', 'ae-07'
+        $r = (Get-Result $s)['ROLE-12']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^No privileged role was assigned outside PIM'
+    }
+
+    It 'ROLE-12 is skipped without PIM, where every assignment is made outside it' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAssignmentSchedules'
+        (Get-Result $s)['ROLE-12'].Status | Should -Be 'Skipped'
+    }
+
+    It 'ROLE-12 is skipped without the audit log' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAuditEvents' 'Denied'
+        (Get-Result $s)['ROLE-12'].Status | Should -Be 'Skipped'
+    }
+
     It 'ROLE-07 to ROLE-11 and SVC-05 are skipped on a snapshot from before schema 4, not passed' {
         $s = Get-Fixture
         $s.SchemaVersion = 3
         foreach ($name in 'RoleAuditEvents', 'RolePolicies', 'RoleGroupOwners', 'AppOwners') { $s.Datasets.PSObject.Properties.Remove($name) }
         $r = Get-Result $s
-        foreach ($id in 'ROLE-09', 'ROLE-10', 'ROLE-11', 'SVC-05') {
+        foreach ($id in 'ROLE-09', 'ROLE-10', 'ROLE-11', 'ROLE-12', 'SVC-05') {
             $r[$id].Status | Should -Be 'Skipped' -Because $id
             $r[$id].Summary | Should -Match 'was not collected \(NotCollected\): The snapshot has schema 3, from before' -Because $id
         }
@@ -956,6 +1006,214 @@ Describe 'Conditional Access' {
     It 'CA-05 reports the break-glass exclusions too when none are named' {
         $r = (Get-Result (Get-Fixture) (Get-AuditProfile))['CA-05']
         @($r.Findings).Count | Should -Be 3
+    }
+}
+
+Describe 'Tenant settings' {
+    BeforeAll {
+        function Get-Policy {
+            param($Snapshot, [string]$Dataset)
+            $Snapshot.Datasets.$Dataset.Items[0]
+        }
+    }
+
+    It 'TEN-01 fails when users can consent to any app' {
+        $r = (Get-Result (Get-Fixture))['TEN-01']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('User consent')
+    }
+
+    It 'TEN-01 fails when users can consent to apps Microsoft flags as risky' {
+        $s = Get-Fixture
+        $p = Get-Policy $s 'AuthorizationPolicy'
+        $p.defaultUserRolePermissions.permissionGrantPoliciesAssigned = @($LowConsentPolicy)
+        $p.allowUserConsentForRiskyApps = $true
+        $r = (Get-Result $s)['TEN-01']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('Risky apps')
+    }
+
+    It 'TEN-01 warns on a custom consent policy' {
+        $s = Get-Fixture
+        (Get-Policy $s 'AuthorizationPolicy').defaultUserRolePermissions.permissionGrantPoliciesAssigned = @('ManagePermissionGrantsForSelf.westmark-sales-apps')
+        $r = (Get-Result $s)['TEN-01']
+        $r.Status | Should -Be 'Warn'
+        $r.Findings[0].Detail | Should -Be 'Custom consent policy: westmark-sales-apps'
+    }
+
+    It 'TEN-01 passes with consent for verified publishers only, or none' {
+        $s = Get-Fixture
+        $p = Get-Policy $s 'AuthorizationPolicy'
+        $p.defaultUserRolePermissions.permissionGrantPoliciesAssigned = @($LowConsentPolicy, 'ManageChatResourceSpecificConsent')
+        $r = (Get-Result $s)['TEN-01']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match 'verified publishers'
+        $p.defaultUserRolePermissions.permissionGrantPoliciesAssigned = @()
+        $r = (Get-Result $s)['TEN-01']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^Users cannot consent'
+    }
+
+    It 'TEN-01 is an error, not a pass, when the policy dataset holds nothing' {
+        $s = Get-Fixture; $s.Datasets.AuthorizationPolicy.Items = @()
+        $r = Get-Result $s
+        foreach ($id in 'TEN-01', 'TEN-02', 'TEN-03') {
+            $r[$id].Status | Should -Be 'Error' -Because $id
+            $r[$id].Summary | Should -Match 'holds 0 policies' -Because $id
+        }
+    }
+
+    It 'TEN-02 warns when users can register apps, and on tenant creation too' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['TEN-02']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('App registrations')
+        (Get-Policy $s 'AuthorizationPolicy').defaultUserRolePermissions.allowedToCreateTenants = $true
+        Get-Subject (Get-Result $s)['TEN-02'] | Should -Be @('App registrations', 'Tenant creation')
+    }
+
+    It 'TEN-02 passes when both are off' {
+        $s = Get-Fixture
+        (Get-Policy $s 'AuthorizationPolicy').defaultUserRolePermissions.allowedToCreateApps = $false
+        (Get-Result $s)['TEN-02'].Status | Should -Be 'Pass'
+    }
+
+    It 'TEN-03 warns when anyone can invite guests, and on member-level guests and self-service sign-up' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['TEN-03']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Guest invitations')
+        $p = Get-Policy $s 'AuthorizationPolicy'
+        $p.guestUserRoleId = $MemberGuestRoleId
+        $p.allowEmailVerifiedUsersToJoinOrganization = $true
+        $r = (Get-Result $s)['TEN-03']
+        Get-Subject $r | Should -Be @('Guest access', 'Guest invitations', 'Self-service sign-up')
+        $r.Summary | Should -Match 'Guests have the same access as members'
+    }
+
+    It 'TEN-03 passes with limited guests and invitations kept to admins' {
+        $s = Get-Fixture
+        (Get-Policy $s 'AuthorizationPolicy').allowInvitesFrom = 'adminsAndGuestInviters'
+        $r = (Get-Result $s)['TEN-03']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Be 'Guests have limited access (the default), and invitations are limited to adminsAndGuestInviters.'
+    }
+
+    It 'TEN-01 to TEN-03 are skipped without the authorization policy' {
+        $s = Get-Fixture; Set-NotCollected $s 'AuthorizationPolicy' 'Denied'
+        $r = Get-Result $s
+        foreach ($id in 'TEN-01', 'TEN-02', 'TEN-03') { $r[$id].Status | Should -Be 'Skipped' -Because $id }
+    }
+
+    It 'TEN-04 warns on text message and voice call' {
+        $s = Get-Fixture
+        $r = (Get-Result $s)['TEN-04']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Text message (SMS)')
+        @((Get-Policy $s 'AuthMethodsPolicy').methods | Where-Object id -eq 'Voice')[0].state = 'enabled'
+        Get-Subject (Get-Result $s)['TEN-04'] | Should -Be @('Text message (SMS)', 'Voice call')
+    }
+
+    It 'TEN-04 passes with both off, and says when the legacy settings still apply' {
+        $s = Get-Fixture
+        $p = Get-Policy $s 'AuthMethodsPolicy'
+        @($p.methods | Where-Object id -eq 'Sms')[0].state = 'disabled'
+        $r = (Get-Result $s)['TEN-04']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Not -Match 'legacy'
+        $p.policyMigrationState = 'migrationInProgress'
+        (Get-Result $s)['TEN-04'].Summary | Should -Match 'legacy MFA and SSPR settings still apply too \(migration state: migrationInProgress\)'
+    }
+
+    It 'TEN-04 is skipped without the authentication methods policy' {
+        $s = Get-Fixture; Set-NotCollected $s 'AuthMethodsPolicy' 'Denied'
+        (Get-Result $s)['TEN-04'].Status | Should -Be 'Skipped'
+    }
+
+    It 'TEN-05 passes on Microsoft''s defaults' {
+        $r = (Get-Result (Get-Fixture))['TEN-05']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match 'Microsoft''s defaults'
+    }
+
+    It 'TEN-05 warns when B2B direct connect or automatic redemption is open to every organization' {
+        $s = Get-Fixture
+        $p = Get-Policy $s 'CrossTenantAccess'
+        $p.isServiceDefault = $false
+        $p.b2bDirectConnectInbound.usersAndGroups.accessType = 'allowed'
+        $p.automaticUserConsentSettings.outboundAllowed = $true
+        $r = (Get-Result $s)['TEN-05']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Automatic redemption (outbound)', 'B2B direct connect (inbound)')
+        @($r.Findings | Where-Object Subject -eq 'B2B direct connect (inbound)')[0].Detail | Should -Match 'Allowed for all users'
+    }
+
+    It 'TEN-05 is skipped without the cross-tenant settings' {
+        $s = Get-Fixture; Set-NotCollected $s 'CrossTenantAccess' 'Denied'
+        (Get-Result $s)['TEN-05'].Status | Should -Be 'Skipped'
+    }
+
+    It 'TEN-06 passes when both break-glass accounts are ready' {
+        $r = (Get-Result (Get-Fixture))['TEN-06']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^All 2 break-glass accounts'
+    }
+
+    It 'TEN-06 fails on a break-glass account that is missing, disabled, synced or without Global Administrator' {
+        $s = Get-Fixture
+        $two = Get-FixtureItem $s 'Users' 'userPrincipalName' 'bg.two@westmark.example'
+        $two.accountEnabled = $false
+        $two.onPremisesSyncEnabled = $true
+        Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-03'
+        $bgProfile = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1')
+        $bgProfile.BreakGlassAccounts = @('bg.one@westmark.example', 'bg.two@westmark.example', 'bg.three@westmark.example')
+        $r = (Get-Result $s $bgProfile)['TEN-06']
+        $r.Status | Should -Be 'Fail'
+        @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
+            'bg.two@westmark.example: Disabled.'
+            'bg.two@westmark.example: Synced from on-premises, so an outage there can lock it out.'
+            'bg.two@westmark.example: Does not hold Global Administrator.'
+            'bg.three@westmark.example: Not found in the tenant.'
+        )
+    }
+
+    It 'TEN-06 fails on a break-glass account that is only eligible for Global Administrator' {
+        $s = Get-Fixture
+        $ra = Get-FixtureItem $s 'RoleAssignments' 'id' 'ra-03'
+        Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-03'
+        $s.Datasets.RoleEligibility.Items = @($s.Datasets.RoleEligibility.Items) + $ra
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Fail'
+        $r.Findings[0].Detail | Should -Match '^Only eligible for Global Administrator'
+    }
+
+    It 'TEN-06 warns when no break-glass account, or only one, is listed' {
+        $s = Get-Fixture
+        $r = (Get-Result $s (Get-AuditProfile))['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        $r.Summary | Should -Match '^No break-glass accounts are listed'
+        $oneProfile = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1')
+        $oneProfile.BreakGlassAccounts = @('bg.one@westmark.example')
+        $r = (Get-Result $s $oneProfile)['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        $r.Summary | Should -Match '^Only one break-glass account'
+    }
+
+    It 'TEN-06 is skipped without the role assignments' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAssignments' 'Denied'
+        (Get-Result $s)['TEN-06'].Status | Should -Be 'Skipped'
+    }
+
+    It 'TEN-01 to TEN-05 are skipped on a snapshot from before schema 5, not passed' {
+        $s = Get-Fixture
+        $s.SchemaVersion = 4
+        foreach ($name in 'AuthorizationPolicy', 'AuthMethodsPolicy', 'CrossTenantAccess') { $s.Datasets.PSObject.Properties.Remove($name) }
+        $r = Get-Result $s
+        foreach ($id in 'TEN-01', 'TEN-02', 'TEN-03', 'TEN-04', 'TEN-05') {
+            $r[$id].Status | Should -Be 'Skipped' -Because $id
+            $r[$id].Summary | Should -Match 'was not collected \(NotCollected\): The snapshot has schema 4, from before' -Because $id
+        }
+        $r['TEN-06'].Status | Should -Be 'Pass'
     }
 }
 

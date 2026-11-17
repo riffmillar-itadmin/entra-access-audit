@@ -2,7 +2,8 @@
 .SYNOPSIS
     Audits who can get into a Microsoft Entra ID tenant and how: privileged
     roles, stale and guest accounts, MFA coverage, app credentials and
-    permissions, service accounts, and Conditional Access gaps. Read-only.
+    permissions, service accounts, Conditional Access gaps and tenant-wide
+    settings. Read-only.
 
 .DESCRIPTION
     Read-only by design. Every call to Microsoft Graph goes through one function
@@ -128,7 +129,14 @@
                        No new scope. Snapshot schema 4.
     0.4.1  2026-11-13  PIM policies keep only the four activation rules and
                        the fields ROLE-10 reads, so a snapshot is about a
-                       fifth of the size.
+                       third of the size.
+    0.5.0  2026-11-16  Tenant settings area: TEN-01 user consent, TEN-02
+                       app registration and tenant creation, TEN-03 guest
+                       access and invitations, TEN-04 SMS and voice, TEN-05
+                       cross-tenant defaults, TEN-06 break-glass accounts.
+                       ROLE-12 privileged roles assigned outside PIM. ROLE-09
+                       no longer lists a self-grant twice when PIM logs it
+                       too. No new scope. Snapshot schema 5.
 #>
 
 [CmdletBinding()]
@@ -145,8 +153,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.4.1'
-$SnapshotSchemaVersion = 4
+$EntraAccessAuditVersion = '0.5.0'
+$SnapshotSchemaVersion = 5
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -175,9 +183,18 @@ $AppAdminRoleIds = @(
     '158c047a-c907-4556-b7ef-446551a6b5f7'   # Cloud Application Administrator
 )
 
-# Datasets added in snapshot schema 4. An older snapshot lacks them, and the
-# checks that need them are Skipped with that reason.
-$Schema4Datasets = @('RoleAuditEvents', 'RolePolicies', 'RoleGroupOwners', 'AppOwners')
+# Datasets added after the first schema, by the schema that added them. An
+# older snapshot lacks them, and the checks that need them are Skipped with
+# that reason.
+$LaterDatasets = [ordered]@{
+    RoleAuditEvents     = 4
+    RolePolicies        = 4
+    RoleGroupOwners     = 4
+    AppOwners           = 4
+    AuthorizationPolicy = 5
+    AuthMethodsPolicy   = 5
+    CrossTenantAccess   = 5
+}
 
 # The PIM policy rules ROLE-10 reads: what activation needs, and how long it
 # lasts. The collector keeps only these.
@@ -187,6 +204,21 @@ $RolePolicyRuleIds = @(
     'Approval_EndUser_Assignment'
     'Expiration_EndUser_Assignment'
 )
+
+# What guests can see in the directory, by the role guestUserRoleId names.
+# Microsoft's well-known IDs, the same in every tenant.
+$GuestAccessLevels = @{
+    'a0b1b346-4d3e-4e8b-98f8-753987be4970' = 'the same access as members'
+    '10dae51f-b6af-4016-8d66-8c2a99b929b3' = 'limited access (the default)'
+    '2af84b1e-32c8-42b7-82bc-daa82404023b' = 'restricted access'
+}
+$MemberGuestRoleId = 'a0b1b346-4d3e-4e8b-98f8-753987be4970'
+
+# User consent settings. Legacy lets users consent to any app that asks for
+# their data; low lets them consent only to verified publishers asking for
+# permissions marked low impact, which Microsoft recommends.
+$LegacyConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-legacy'
+$LowConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-low'
 
 # The tenants Microsoft's own apps belong to. An app owned by any other tenant
 # but this one comes from another organization.
@@ -478,6 +510,11 @@ function Get-TenantSnapshot {
     $datasets.DelegatedPermissionGrants = Read-Dataset -Uri '/v1.0/oauth2PermissionGrants'
     $datasets.AppOwners = Get-AppOwner -Datasets $datasets
 
+    Write-Host 'Reading tenant settings...'
+    $datasets.AuthorizationPolicy = Get-AuthorizationPolicy
+    $datasets.AuthMethodsPolicy = Get-AuthMethodsPolicy
+    $datasets.CrossTenantAccess = Get-CrossTenantAccess
+
     Write-Host 'Reading Conditional Access and security defaults...'
     $datasets.ConditionalAccess = Read-Dataset -Uri '/v1.0/identity/conditionalAccess/policies' -Needs 'Microsoft Entra ID P1'
     try {
@@ -628,6 +665,77 @@ function Get-RolePolicy {
             }
         })
     return $ds
+}
+
+function Read-PolicyObject {
+    # Reads one policy, which Graph returns as a single object rather than a
+    # collection, into a dataset of one item kept to what the checks read.
+    param([Parameter(Mandatory)][string]$Uri, [Parameter(Mandatory)][scriptblock]$Trim)
+    try {
+        $policy = Invoke-AuditGraphRequest -Uri $Uri
+        return (New-Dataset -Status 'Collected' -Items @(& $Trim $policy))
+    } catch {
+        $text = Get-ErrorText $_
+        Write-Verbose "Couldn't read ${Uri}: $text"
+        return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
+    }
+}
+
+function Get-AuthorizationPolicy {
+    # Default user permissions, user consent and guest settings.
+    Read-PolicyObject -Uri '/v1.0/policies/authorizationPolicy' -Trim {
+        param($p)
+        [ordered]@{
+            allowInvitesFrom                          = Get-Value $p 'allowInvitesFrom'
+            allowEmailVerifiedUsersToJoinOrganization = Get-Value $p 'allowEmailVerifiedUsersToJoinOrganization'
+            allowUserConsentForRiskyApps              = Get-Value $p 'allowUserConsentForRiskyApps'
+            guestUserRoleId                           = Get-Value $p 'guestUserRoleId'
+            defaultUserRolePermissions                = [ordered]@{
+                allowedToCreateApps             = Get-Value $p 'defaultUserRolePermissions', 'allowedToCreateApps'
+                allowedToCreateTenants          = Get-Value $p 'defaultUserRolePermissions', 'allowedToCreateTenants'
+                permissionGrantPoliciesAssigned = @(Get-Value $p 'defaultUserRolePermissions', 'permissionGrantPoliciesAssigned' | Where-Object { $null -ne $_ })
+            }
+        }
+    }
+}
+
+function Get-AuthMethodsPolicy {
+    # Which sign-in methods are turned on, and whether the old MFA and SSPR
+    # settings still apply alongside this policy.
+    Read-PolicyObject -Uri '/v1.0/policies/authenticationMethodsPolicy' -Trim {
+        param($p)
+        [ordered]@{
+            policyMigrationState = Get-Value $p 'policyMigrationState'
+            methods              = @(foreach ($m in @(Get-Value $p 'authenticationMethodConfigurations')) {
+                    if ($null -eq $m) { continue }
+                    [ordered]@{ id = Get-Value $m 'id'; state = Get-Value $m 'state' }
+                })
+        }
+    }
+}
+
+function Get-CrossTenantAccess {
+    # The default cross-tenant access settings, which apply to every other
+    # organization without its own settings.
+    Read-PolicyObject -Uri '/v1.0/policies/crossTenantAccessPolicy/default' -Trim {
+        param($p)
+        $setting = [ordered]@{
+            isServiceDefault             = Get-Value $p 'isServiceDefault'
+            automaticUserConsentSettings = [ordered]@{
+                inboundAllowed  = Get-Value $p 'automaticUserConsentSettings', 'inboundAllowed'
+                outboundAllowed = Get-Value $p 'automaticUserConsentSettings', 'outboundAllowed'
+            }
+        }
+        foreach ($name in 'b2bDirectConnectInbound', 'b2bDirectConnectOutbound') {
+            $setting[$name] = [ordered]@{
+                usersAndGroups = [ordered]@{
+                    accessType = Get-Value $p $name, 'usersAndGroups', 'accessType'
+                    targets    = @(foreach ($x in @(Get-Value $p $name, 'usersAndGroups', 'targets')) { if ($null -ne $x) { "$(Get-Value $x 'target')" } })
+                }
+            }
+        }
+        $setting
+    }
 }
 
 function Get-RoleAuditEvent {
@@ -799,8 +907,8 @@ function Get-AuditContext {
         $statusReason['ServicePrincipalDetails'] = "$(Get-Value $ds 'ServicePrincipals', 'Reason')"
     }
     # Role audit events, PIM policies and group and app owners arrived in
-    # schema 4.
-    foreach ($name in $Schema4Datasets) {
+    # schema 4; tenant settings in schema 5.
+    foreach ($name in $LaterDatasets.Keys) {
         if (-not $status.ContainsKey($name)) {
             $status[$name] = 'NotCollected'
             $statusReason[$name] = "The snapshot has schema $schema, from before $name was collected."
@@ -919,6 +1027,8 @@ function Get-AuditContext {
         TenantId      = "$(Get-Value $Snapshot 'TenantId')"
         GroupRoles    = $groupRoles
         EligibleNoSchedule = $eligibleNoSchedule
+        RoleNames     = $roleNames
+        PrivilegedRoleIds = $privilegedRoleIds
     }
 }
 
@@ -1033,6 +1143,15 @@ function Get-PolicyRule {
     # One rule of a PIM policy, by its ID, or $null.
     param($Policy, [string]$RuleId)
     return (@(Get-Value $Policy 'rules' | Where-Object { $null -ne $_ -and "$(Get-Value $_ 'id')" -eq $RuleId }) | Select-Object -First 1)
+}
+
+function Get-TenantPolicy {
+    # The one policy object a tenant settings dataset holds. A collected
+    # dataset with none is an error, never read as default settings.
+    param($Context, [string]$Dataset)
+    $items = @(Get-Value $Context.Snapshot 'Datasets', $Dataset, 'Items' | Where-Object { $null -ne $_ })
+    if ($items.Count -ne 1) { throw "$Dataset holds $($items.Count) policies, not one." }
+    return $items[0]
 }
 
 function ConvertTo-Hour {
@@ -1209,10 +1328,12 @@ $AuditChecks = @(
             # Adding a role, eligible or active, directly or through PIM. A PIM
             # activation is a person using their own eligibility, so it doesn't
             # count; nor does a change PIM completes on someone's behalf, which
-            # names no user as its initiator.
+            # names no user as its initiator. PIM's "outside of PIM" event
+            # repeats a change the directory already logged, so it isn't
+            # counted twice.
             $adds = @($events | Where-Object {
                     "$(Get-Value $_ 'activityDisplayName')" -match '^Add (eligible |scoped )?member to role' -and
-                    "$(Get-Value $_ 'activityDisplayName')" -notmatch 'activat' -and
+                    "$(Get-Value $_ 'activityDisplayName')" -notmatch 'activat|outside of PIM' -and
                     "$(Get-Value $_ 'result')" -eq 'success'
                 })
             $findings = foreach ($e in $adds) {
@@ -1294,6 +1415,48 @@ $AuditChecks = @(
             if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) group owner(s) can add themselves to a group that holds a privileged role, and so take the role. Remove the owners, or make them hold the role themselves under PIM.$note" $findings) }
             if ($Context.GroupRoles.Count -eq 0) { return (New-Outcome Pass 'No group holds a privileged role.') }
             return (New-Outcome Pass "No one else owns a group that holds a privileged role.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-12'; Area = 'Privileged roles'; Severity = 'Medium'
+        Title = 'Privileged roles assigned outside PIM'
+        Needs = @('RoleAuditEvents', 'RoleAssignmentSchedules')
+        Test = {
+            param($Context)
+            # PIM logs its own event whenever a role is assigned directly in
+            # the directory instead of through PIM. Without PIM (no P2) every
+            # assignment is made that way, and the check is Skipped through
+            # RoleAssignmentSchedules.
+            $events = @(Get-Value $Context.Snapshot 'Datasets', 'RoleAuditEvents', 'Items' | Where-Object {
+                    $null -ne $_ -and "$(Get-Value $_ 'activityDisplayName')" -match 'outside of PIM' -and "$(Get-Value $_ 'result')" -eq 'success'
+                })
+            $breakGlass = 0; $other = 0
+            $findings = foreach ($e in $events) {
+                $targets = @(Get-Value $e 'targetResources' | Where-Object { $null -ne $_ })
+                $role = @($targets | Where-Object { "$(Get-Value $_ 'type')" -eq 'Role' })
+                $roleId = if ($role.Count) { "$(Get-Value $role[0] 'id')" } else { '' }
+                if (-not $Context.PrivilegedRoleIds.ContainsKey($roleId)) { $other++; continue }
+                $roleName = "$(Get-Value $role[0] 'displayName')"
+                if (-not $roleName) { $roleName = $Context.RoleNames[$roleId] }
+                $user = @($targets | Where-Object { @('User', 'ServicePrincipal', 'Group') -contains "$(Get-Value $_ 'type')" })
+                $userId = if ($user.Count) { "$(Get-Value $user[0] 'id')" } else { '' }
+                if ($Context.BreakGlassIds.ContainsKey($userId)) { $breakGlass++; continue }
+                $name = ''
+                if ($Context.UsersById.ContainsKey($userId)) { $name = "$(Get-Value $Context.UsersById[$userId] 'userPrincipalName')" }
+                if (-not $name -and $user.Count) { $name = "$(Get-Value $user[0] 'userPrincipalName')" }
+                if (-not $name -and $user.Count) { $name = "$(Get-Value $user[0] 'displayName')" }
+                if (-not $name) { $name = $(if ($userId) { $userId } else { 'Unknown account' }) }
+                $by = "$(Get-Value $e 'initiatedBy', 'userPrincipalName')"
+                if (-not $by) { $by = "$(Get-Value $e 'initiatedBy', 'app')" }
+                $byText = if ($by) { " by $by" } else { '' }
+                New-Finding $name "$roleName$byText, $(Format-AuditDate (Get-Value $e 'activityDateTime'))"
+            }
+            $findings = @($findings | Sort-Object Subject, Detail)
+            $note = ''
+            if ($breakGlass) { $note += " $breakGlass assignment(s) to break-glass accounts weren't counted." }
+            if ($other) { $note += " $other assignment(s) of roles that aren't privileged weren't counted." }
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) privileged role assignment(s) in the audit log were made directly, outside PIM, so they skipped its approval, justification and end date. Make them eligible in PIM instead.$note" $findings) }
+            return (New-Outcome Pass "No privileged role was assigned outside PIM in the audit log, which goes back 7 days, or 30 with Microsoft Entra ID P1.$note")
         }
     }
     [pscustomobject]@{
@@ -1809,6 +1972,130 @@ $AuditChecks = @(
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) exclusion(s) from enabled policies, beyond the break-glass accounts. Check each is still needed." $findings) }
             if (@(Get-EnabledPolicy $Context).Count -eq 0) { return (New-Outcome Pass 'No policy is enabled, so none has exclusions.') }
             return (New-Outcome Pass 'Enabled policies exclude only the break-glass accounts.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-01'; Area = 'Tenant settings'; Severity = 'High'
+        Title = 'Users can consent to apps'
+        Needs = @('AuthorizationPolicy')
+        Test = {
+            param($Context)
+            $p = Get-TenantPolicy $Context 'AuthorizationPolicy'
+            $consent = @(Get-Value $p 'defaultUserRolePermissions', 'permissionGrantPoliciesAssigned' | Where-Object { "$_" -like 'ManagePermissionGrantsForSelf.*' })
+            $fail = [Collections.Generic.List[object]]::new()
+            if ($consent -contains $LegacyConsentPolicy) { $fail.Add((New-Finding 'User consent' 'Users can consent to any app that asks for their data. Allow consent only for verified publishers and low-impact permissions, or none.')) }
+            if ((Get-Value $p 'allowUserConsentForRiskyApps') -eq $true) { $fail.Add((New-Finding 'Risky apps' 'Users can consent to apps Microsoft has flagged as risky.')) }
+            if ($fail.Count) { return (New-Outcome Fail 'Users can grant apps access to their data without an admin, which is how consent phishing works.' $fail.ToArray()) }
+            $custom = @($consent | Where-Object { $_ -ne $LowConsentPolicy } | ForEach-Object { New-Finding 'User consent' "Custom consent policy: $("$_".Substring(30))" })
+            if ($custom.Count) { return (New-Outcome Warn "Users can consent under $($custom.Count) custom policy(ies). Check what each allows." $custom) }
+            if ($consent -contains $LowConsentPolicy) { return (New-Outcome Pass "Users can consent only to verified publishers' apps asking for low-impact permissions, as Microsoft recommends.") }
+            return (New-Outcome Pass 'Users cannot consent to apps; an admin approves each one.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-02'; Area = 'Tenant settings'; Severity = 'Medium'
+        Title = 'Users can register apps or create tenants'
+        Needs = @('AuthorizationPolicy')
+        Test = {
+            param($Context)
+            $p = Get-TenantPolicy $Context 'AuthorizationPolicy'
+            $findings = @(
+                if ((Get-Value $p 'defaultUserRolePermissions', 'allowedToCreateApps') -ne $false) { New-Finding 'App registrations' 'Any user can register an app, and owns its credentials.' }
+                if ((Get-Value $p 'defaultUserRolePermissions', 'allowedToCreateTenants') -ne $false) { New-Finding 'Tenant creation' 'Any user can create a new tenant, outside this one''s policies.' }
+            )
+            if ($findings.Count) { return (New-Outcome Warn "$($findings.Count) default user permission(s) are on that most users don't need. Turn them off, and give the people who need them the Application Developer or Tenant Creator role." $findings) }
+            return (New-Outcome Pass 'Users cannot register apps or create tenants without a role.')
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-03'; Area = 'Tenant settings'; Severity = 'Medium'
+        Title = 'Guest access and invitations'
+        Needs = @('AuthorizationPolicy')
+        Test = {
+            param($Context)
+            $p = Get-TenantPolicy $Context 'AuthorizationPolicy'
+            $guestRole = "$(Get-Value $p 'guestUserRoleId')"
+            $level = if ($GuestAccessLevels.ContainsKey($guestRole)) { $GuestAccessLevels[$guestRole] } else { "a role this audit doesn't know ($guestRole)" }
+            $findings = @(
+                if ($guestRole -eq $MemberGuestRoleId) { New-Finding 'Guest access' 'Guests can read the directory as members can.' }
+                if ("$(Get-Value $p 'allowInvitesFrom')" -eq 'everyone') { New-Finding 'Guest invitations' 'Anyone, guests included, can invite more guests.' }
+                if ((Get-Value $p 'allowEmailVerifiedUsersToJoinOrganization') -eq $true) { New-Finding 'Self-service sign-up' 'Anyone with a verified email address on one of the tenant''s domains can join it.' }
+            )
+            if ($findings.Count) { return (New-Outcome Warn "$($findings.Count) guest setting(s) let outsiders in or see more than they need. Guests have $level." $findings) }
+            return (New-Outcome Pass "Guests have $level, and invitations are limited to $("$(Get-Value $p 'allowInvitesFrom')").")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-04'; Area = 'Tenant settings'; Severity = 'Medium'
+        Title = 'Text message and voice call sign-in methods'
+        Needs = @('AuthMethodsPolicy')
+        Test = {
+            param($Context)
+            $p = Get-TenantPolicy $Context 'AuthMethodsPolicy'
+            $names = @{ Sms = 'Text message (SMS)'; Voice = 'Voice call' }
+            $findings = @(foreach ($m in @(Get-Value $p 'methods' | Where-Object { $null -ne $_ })) {
+                    $id = "$(Get-Value $m 'id')"
+                    if ($names.ContainsKey($id) -and "$(Get-Value $m 'state')" -eq 'enabled') { New-Finding $names[$id] 'Enabled in the authentication methods policy.' }
+                })
+            $migration = "$(Get-Value $p 'policyMigrationState')"
+            $note = ''
+            if ($migration -and $migration -ne 'migrationComplete') { $note = " The legacy MFA and SSPR settings still apply too (migration state: $migration), and this audit doesn't read them; check them in the portal." }
+            if ($findings.Count) { return (New-Outcome Warn "$($findings.Count) phone-based method(s) are on. Codes sent by text or call can be intercepted or SIM-swapped; move users to the Authenticator app or passkeys.$note" @($findings | Sort-Object Subject)) }
+            return (New-Outcome Pass "Text message and voice call are off in the authentication methods policy.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-05'; Area = 'Tenant settings'; Severity = 'Low'
+        Title = 'Cross-tenant access defaults'
+        Needs = @('CrossTenantAccess')
+        Test = {
+            param($Context)
+            $p = Get-TenantPolicy $Context 'CrossTenantAccess'
+            $findings = @(
+                foreach ($dir in 'Inbound', 'Outbound') {
+                    $u = Get-Value $p "b2bDirectConnect$dir", 'usersAndGroups'
+                    if ("$(Get-Value $u 'accessType')" -eq 'allowed') {
+                        $who = @(Get-Value $u 'targets' | Where-Object { $_ })
+                        $whoText = if ($who -contains 'AllUsers') { 'all users' } else { "$($who.Count) user(s) or group(s)" }
+                        New-Finding "B2B direct connect ($($dir.ToLowerInvariant()))" "Allowed for $whoText with every other organization, by default."
+                    }
+                    if ((Get-Value $p 'automaticUserConsentSettings', "$($dir.ToLowerInvariant())Allowed") -eq $true) {
+                        New-Finding "Automatic redemption ($($dir.ToLowerInvariant()))" 'Invitations are accepted without the user being asked, for every other organization.'
+                    }
+                }
+            )
+            if ($findings.Count) { return (New-Outcome Warn "$($findings.Count) default cross-tenant setting(s) open access to every other organization. Allow these per organization instead." $findings) }
+            $origin = if ((Get-Value $p 'isServiceDefault') -eq $true) { "Microsoft's defaults" } else { 'changed from Microsoft''s defaults' }
+            return (New-Outcome Pass "B2B direct connect and automatic redemption are off by default ($origin).")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-06'; Area = 'Tenant settings'; Severity = 'High'
+        Title = 'Break-glass accounts'
+        Needs = @('Users', 'RoleAssignments')
+        Test = {
+            param($Context)
+            $listed = @($Context.Profile.BreakGlassAccounts | Where-Object { "$_" })
+            $how = 'Microsoft recommends two cloud-only accounts holding Global Administrator, kept out of daily use, for when sign-in is otherwise locked out.'
+            if ($listed.Count -eq 0) { return (New-Outcome Warn "No break-glass accounts are listed in BreakGlassAccounts, so they can't be checked. $how" @(New-Finding 'Profile' 'List the break-glass accounts in BreakGlassAccounts.')) }
+            $byUpn = @{}
+            foreach ($u in $Context.UsersById.Values) { $byUpn["$(Get-Value $u 'userPrincipalName')".ToLowerInvariant()] = $u }
+            $findings = foreach ($upn in $listed) {
+                $u = $byUpn["$upn".ToLowerInvariant()]
+                if ($null -eq $u) { New-Finding "$upn" 'Not found in the tenant.'; continue }
+                $id = "$(Get-Value $u 'id')"
+                if ((Get-Value $u 'accountEnabled') -eq $false) { New-Finding "$upn" 'Disabled.' }
+                if ((Get-Value $u 'onPremisesSyncEnabled') -eq $true) { New-Finding "$upn" 'Synced from on-premises, so an outage there can lock it out.' }
+                $ga = @($Context.Holders | Where-Object { $_.PrincipalId -eq $id -and $_.RoleId -eq $GlobalAdminRoleId })
+                if (-not @($ga | Where-Object Kind -eq 'Active')) {
+                    $detail = if ($ga.Count) { 'Only eligible for Global Administrator, so it must activate through PIM before it can help.' } else { 'Does not hold Global Administrator.' }
+                    New-Finding "$upn" $detail
+                }
+            }
+            $findings = @($findings)
+            if ($findings.Count) { return (New-Outcome Fail "$($findings.Count) problem(s) with the break-glass accounts would stop them working in an emergency." $findings) }
+            if ($listed.Count -lt 2) { return (New-Outcome Warn "Only one break-glass account is listed. $how" @(New-Finding "$($listed[0])" 'The only break-glass account.')) }
+            return (New-Outcome Pass "All $($listed.Count) break-glass accounts exist, are enabled and cloud-only, and hold Global Administrator.")
         }
     }
 )
