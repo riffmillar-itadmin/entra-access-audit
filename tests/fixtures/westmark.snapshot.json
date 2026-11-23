@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 5,
-  "ToolVersion": "0.5.0",
+  "SchemaVersion": 6,
+  "ToolVersion": "0.6.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -23,6 +23,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "admin.lee@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-10-30T15:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -39,6 +46,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "bg.one@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-01-15T10:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -54,7 +68,14 @@
           "createdDateTime": "2025-01-01T00:00:00Z",
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
-          "externalUserStateChangeDateTime": null
+          "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "bg.two@westmark.example"
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000004",
@@ -66,6 +87,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "sam.ortiz@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-10-28T08:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -82,6 +110,13 @@
           "onPremisesSyncEnabled": true,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "dana.kim@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-10-29T17:30:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -98,6 +133,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": "Accepted",
           "externalUserStateChangeDateTime": "2025-05-01T00:00:00Z",
+          "identities": [
+            {
+              "signInType": "federated",
+              "issuer": "ExternalAzureAD",
+              "issuerAssignedId": null
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-10-20T12:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -114,6 +156,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "jo.park@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-05-01T09:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -129,7 +178,14 @@
           "createdDateTime": "2026-10-20T09:00:00Z",
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
-          "externalUserStateChangeDateTime": null
+          "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "new.hire@westmark.example"
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000009",
@@ -140,7 +196,14 @@
           "createdDateTime": "2025-06-01T09:00:00Z",
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
-          "externalUserStateChangeDateTime": null
+          "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "old.unused@westmark.example"
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000010",
@@ -152,6 +215,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "disabled.user@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2025-12-01T09:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -168,6 +238,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": "Accepted",
           "externalUserStateChangeDateTime": "2025-09-01T00:00:00Z",
+          "identities": [
+            {
+              "signInType": "federated",
+              "issuer": "ExternalAzureAD",
+              "issuerAssignedId": null
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-03-01T09:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -183,7 +260,14 @@
           "createdDateTime": "2026-04-01T09:00:00Z",
           "onPremisesSyncEnabled": null,
           "externalUserState": "PendingAcceptance",
-          "externalUserStateChangeDateTime": "2026-04-01T09:00:00Z"
+          "externalUserStateChangeDateTime": "2026-04-01T09:00:00Z",
+          "identities": [
+            {
+              "signInType": "federated",
+              "issuer": "ExternalAzureAD",
+              "issuerAssignedId": null
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000013",
@@ -194,7 +278,14 @@
           "createdDateTime": "2026-10-25T09:00:00Z",
           "onPremisesSyncEnabled": null,
           "externalUserState": "PendingAcceptance",
-          "externalUserStateChangeDateTime": "2026-10-25T09:00:00Z"
+          "externalUserStateChangeDateTime": "2026-10-25T09:00:00Z",
+          "identities": [
+            {
+              "signInType": "federated",
+              "issuer": "ExternalAzureAD",
+              "issuerAssignedId": null
+            }
+          ]
         },
         {
           "id": "00000000-0000-4000-8000-000000000014",
@@ -206,6 +297,13 @@
           "onPremisesSyncEnabled": null,
           "externalUserState": null,
           "externalUserStateChangeDateTime": null,
+          "identities": [
+            {
+              "signInType": "userPrincipalName",
+              "issuer": "westmark.example",
+              "issuerAssignedId": "riley.ng@westmark.example"
+            }
+          ],
           "signInActivity": {
             "lastSignInDateTime": "2026-10-31T11:00:00Z",
             "lastNonInteractiveSignInDateTime": null,
@@ -1411,6 +1509,34 @@
             ],
             "authenticationStrength": null
           }
+        }
+      ]
+    },
+    "CaGroups": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "id": "00000000-0000-4000-8000-000000000103",
+          "found": true,
+          "displayName": "Travel Exemptions",
+          "isAssignableToRole": false,
+          "members": [
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000004",
+              "displayName": "Sam Ortiz",
+              "userPrincipalName": "sam.ortiz@westmark.example"
+            }
+          ],
+          "owners": [
+            {
+              "@odata.type": "#microsoft.graph.user",
+              "id": "00000000-0000-4000-8000-000000000005",
+              "displayName": "Dana Kim",
+              "userPrincipalName": "dana.kim@westmark.example"
+            }
+          ]
         }
       ]
     },

@@ -20,6 +20,8 @@ BeforeAll {
         '{"error":{"code":"Authentication_RequestFromNonPremiumTenantOrB2CTenant","message":"Neither tenant is B2C or tenant does not have premium license"}}'
     $script:Denied = New-GraphError 'Response status code does not indicate success: Forbidden (Forbidden).' `
         '{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges to complete the operation."}}'
+    $script:NotFound = New-GraphError 'Response status code does not indicate success: NotFound (Not Found).' `
+        '{"error":{"code":"Request_ResourceNotFound","message":"Resource does not exist or one of its queried reference-property objects are not present."}}'
     $script:BadRequest = New-GraphError 'Response status code does not indicate success: BadRequest (Bad Request).' `
         '{"error":{"code":"BadRequest","message":"Expand is not supported here."}}'
 
@@ -37,11 +39,11 @@ BeforeAll {
         $script:Fail = @{}
         $script:Calls = [Collections.Generic.List[string]]::new()
         $script:Pages = @{
-            "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,signInActivity&`$top=500" =
+            "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,identities,signInActivity&`$top=500" =
             ConvertTo-Page @([pscustomobject]@{ id = 'u1'; userPrincipalName = 'a@westmark.example'; userType = 'Member'; accountEnabled = $true
                     createdDateTime = [datetime]::new(2025, 1, 2, 3, 4, 5, [DateTimeKind]::Utc); signInActivity = [pscustomobject]@{ lastSignInDateTime = '2026-10-01T00:00:00Z' } }) 'page2'
             'page2' = ConvertTo-Page @([pscustomobject]@{ id = 'u2'; userPrincipalName = 'b@westmark.example'; userType = 'Guest'; accountEnabled = $true })
-            "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime&`$top=999" =
+            "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,identities&`$top=999" =
             ConvertTo-Page @([pscustomobject]@{ id = 'u1' }, [pscustomobject]@{ id = 'u2' }, [pscustomobject]@{ id = 'u3' })
             '/v1.0/roleManagement/directory/roleDefinitions' = ConvertTo-Page @([pscustomobject]@{ id = $GlobalAdminRoleId; displayName = 'Global Administrator' })
             '/v1.0/roleManagement/directory/roleAssignments?$expand=principal' = ConvertTo-Page @(
@@ -111,6 +113,23 @@ BeforeAll {
         return $script:Pages[$Uri]
     }
 
+    function Set-FakeCaGroup {
+        # Two policies naming one group twice and a deleted group.
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Test helper that changes nothing outside the test.')]
+        param()
+        $script:Pages['/v1.0/identity/conditionalAccess/policies'] = ConvertTo-Page @(
+            [pscustomobject]@{ id = 'p1'; displayName = 'Policy'; state = 'enabled'
+                conditions = [pscustomobject]@{ users = [pscustomobject]@{ includeUsers = @('All'); excludeGroups = @('cg1', 'gone') } } }
+            [pscustomobject]@{ id = 'p2'; displayName = 'Other'; state = 'disabled'
+                conditions = [pscustomobject]@{ users = [pscustomobject]@{ includeGroups = @('cg1') } } })
+        $script:Pages['/v1.0/groups/cg1?$select=id,displayName,isAssignableToRole'] = [pscustomobject]@{ id = 'cg1'; displayName = 'Emergency Access'; isAssignableToRole = $true }
+        $script:Pages['/v1.0/groups/cg1/transitiveMembers?$select=id,displayName,userPrincipalName&$top=999'] = ConvertTo-Page @(
+            [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; displayName = 'A'; userPrincipalName = 'a@westmark.example'; mail = 'a@westmark.example' })
+        $script:Pages['/v1.0/groups/cg1/owners?$select=id,displayName,userPrincipalName&$top=999'] = ConvertTo-Page @(
+            [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u2'; displayName = 'B'; userPrincipalName = 'b@westmark.example' })
+        $script:Fail['/v1.0/groups/gone?$select=id,displayName,isAssignableToRole'] = $NotFound
+    }
+
     function Get-Collected {
         # Collects, then does the round trip the main script does.
         $snap = Get-TenantSnapshot -TenantId 'tenant' 6>$null
@@ -119,7 +138,7 @@ BeforeAll {
 
     $script:RolePolicyUri = "/v1.0/policies/roleManagementPolicyAssignments?`$filter=scopeId%20eq%20'/'%20and%20scopeType%20eq%20'DirectoryRole'&`$expand=policy(`$expand=rules)"
     $script:RoleAuditUri = "/v1.0/auditLogs/directoryAudits?`$filter=category%20eq%20'RoleManagement'"
-    $script:UsersWithSignIns = "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,signInActivity&`$top=500"
+    $script:UsersWithSignIns = "/v1.0/users?`$select=id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,identities,signInActivity&`$top=500"
 }
 
 Describe 'Get-GraphErrorStatus' {
@@ -189,6 +208,39 @@ Describe 'Get-TenantSnapshot' {
         $s.Datasets.SignIns.Reason | Should -Match '^Needs Microsoft Entra ID P1\.'
         $s.Datasets.Users.Status | Should -Be 'Collected'
         @($s.Datasets.Users.Items).Count | Should -Be 3
+    }
+
+    It 'reads each Conditional Access group once, with members, owners and whether it is role-assignable' {
+        Set-FakeCaGroup
+        $s = Get-Collected
+        $s.Datasets.CaGroups.Status | Should -Be 'Collected'
+        $g = @($s.Datasets.CaGroups.Items)
+        @($g | ForEach-Object id) | Should -Be @('cg1', 'gone')
+        $g[0].found | Should -BeTrue
+        $g[0].isAssignableToRole | Should -BeTrue
+        $g[0].displayName | Should -Be 'Emergency Access'
+        @($g[0].members | ForEach-Object userPrincipalName) | Should -Be @('a@westmark.example')
+        @($g[0].members[0].PSObject.Properties.Name) | Should -Be @('@odata.type', 'id', 'displayName', 'userPrincipalName')
+        @($g[0].owners | ForEach-Object id) | Should -Be @('u2')
+        # A group a policy still names after it was deleted is kept, marked.
+        $g[1].found | Should -BeFalse
+        @($Calls | Where-Object { $_ -eq '/v1.0/groups/cg1?$select=id,displayName,isAssignableToRole' }).Count | Should -Be 1
+    }
+
+    It 'marks CaGroups Denied when a group can''t be read, rather than keeping part of them' {
+        Set-FakeCaGroup
+        $Fail['/v1.0/groups/cg1/transitiveMembers?$select=id,displayName,userPrincipalName&$top=999'] = $Denied
+        $s = Get-Collected
+        $s.Datasets.CaGroups.Status | Should -Be 'Denied'
+        @($s.Datasets.CaGroups.Items).Count | Should -Be 0
+        $s.Datasets.ConditionalAccess.Status | Should -Be 'Collected'
+    }
+
+    It 'marks CaGroups NotCollected without Conditional Access' {
+        $Fail['/v1.0/identity/conditionalAccess/policies'] = $NotLicensed
+        $s = Get-Collected
+        $s.Datasets.CaGroups.Status | Should -Be 'NotCollected'
+        $s.Datasets.CaGroups.Reason | Should -Match '^Conditional Access was not collected'
     }
 
     It 'marks SignIns Denied when AuditLog.Read.All was not granted' {

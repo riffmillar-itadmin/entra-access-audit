@@ -33,7 +33,9 @@
     # Access and to sign in rarely, so ROLE-02, ROLE-07, ROLE-08, ROLE-11,
     # ROLE-12, SVC-05, STALE-01, STALE-02 and CA-05 leave them out. They still
     # count in ROLE-01, and still need MFA. TEN-06 checks that each one would
-    # work in an emergency, and warns when fewer than two are listed.
+    # work in an emergency: an active Global Administrator, outside every
+    # enforced Conditional Access policy, and tested with a sign-in within 90
+    # days. It warns when fewer than two are listed.
     BreakGlassAccounts    = @(
         # 'bg.one@westmark.example'
     )
