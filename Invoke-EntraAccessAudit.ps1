@@ -140,6 +140,16 @@
     0.5.1  2026-11-16  Test and lint summaries use the JobSweep layout: one
                        banner line with script, status and counts, a PS line,
                        and a Notes column only when a row needs one.
+    0.6.0  2026-11-23  Break-glass checks from a live lab. TEN-06 fails a
+                       break-glass account that an enforced Conditional
+                       Access policy reaches, and warns when one hasn't
+                       signed in within 90 days. CA-05 names who an
+                       excluded group lets through, and flags a group that
+                       isn't role-assignable or has owners. ROLE-13
+                       privileged roles held by personal or external
+                       accounts. Fix: TEN-01 called Microsoft's managed
+                       consent policies custom. No new scope. Snapshot
+                       schema 6.
 #>
 
 [CmdletBinding()]
@@ -156,8 +166,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.5.1'
-$SnapshotSchemaVersion = 5
+$EntraAccessAuditVersion = '0.6.0'
+$SnapshotSchemaVersion = 6
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -197,6 +207,7 @@ $LaterDatasets = [ordered]@{
     AuthorizationPolicy = 5
     AuthMethodsPolicy   = 5
     CrossTenantAccess   = 5
+    CaGroups            = 6
 }
 
 # The PIM policy rules ROLE-10 reads: what activation needs, and how long it
@@ -222,6 +233,14 @@ $MemberGuestRoleId = 'a0b1b346-4d3e-4e8b-98f8-753987be4970'
 # permissions marked low impact, which Microsoft recommends.
 $LegacyConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-legacy'
 $LowConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-low'
+# Microsoft-managed built-in policies, not custom ones. Recommended is the
+# default for a new tenant and follows Microsoft's current advice; the mail
+# client policy lets users consent to popular mail apps for mail access.
+$RecommendedConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-recommended'
+$MailAppsConsentPolicy = 'ManagePermissionGrantsForSelf.microsoft-user-default-allow-consent-apps'
+
+# Microsoft asks that break-glass accounts are tested at least this often.
+$BreakGlassTestDays = 90
 
 # The tenants Microsoft's own apps belong to. An app owned by any other tenant
 # but this one comes from another organization.
@@ -479,7 +498,7 @@ function Get-TenantSnapshot {
     # an empty tenant.
     param([string]$TenantId)
     $datasets = [ordered]@{}
-    $userFields = 'id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime'
+    $userFields = 'id,displayName,userPrincipalName,userType,accountEnabled,createdDateTime,onPremisesSyncEnabled,externalUserState,externalUserStateChangeDateTime,identities'
 
     Write-Host 'Reading users and sign-in activity...'
     $users = Read-Dataset -Uri "/v1.0/users?`$select=$userFields,signInActivity&`$top=500" -Needs 'Microsoft Entra ID P1'
@@ -520,6 +539,7 @@ function Get-TenantSnapshot {
 
     Write-Host 'Reading Conditional Access and security defaults...'
     $datasets.ConditionalAccess = Read-Dataset -Uri '/v1.0/identity/conditionalAccess/policies' -Needs 'Microsoft Entra ID P1'
+    $datasets.CaGroups = Get-CaGroup -Datasets $datasets
     try {
         $sd = Invoke-AuditGraphRequest -Uri '/v1.0/policies/identitySecurityDefaultsEnforcementPolicy'
         $datasets.SecurityDefaults = New-Dataset -Status 'Collected' -Items @([ordered]@{ isEnabled = [bool](Get-Value $sd 'isEnabled') })
@@ -623,6 +643,57 @@ function Read-GroupRelation {
     } catch {
         $text = Get-ErrorText $_
         Write-Verbose "Couldn't read role group ${Relation}: $text"
+        return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
+    }
+}
+
+function Get-CaGroup {
+    # Every group a Conditional Access policy includes or excludes: whether
+    # it can be assigned roles, its members (nested ones too) and its owners,
+    # so the checks can tell whom a policy reaches and who can change that.
+    # All or nothing, like the role groups. A group that no longer exists is
+    # kept with found = false.
+    param([Parameter(Mandatory)]$Datasets)
+    $ca = $Datasets['ConditionalAccess']
+    if ($null -eq $ca -or "$(Get-Value $ca 'Status')" -ne 'Collected') {
+        return (New-Dataset -Status 'NotCollected' -Reason 'Conditional Access was not collected, so neither were its groups.')
+    }
+    $ids = [ordered]@{}
+    foreach ($p in @(Get-Value $ca 'Items')) {
+        if ($null -eq $p) { continue }
+        foreach ($side in 'includeGroups', 'excludeGroups') {
+            foreach ($id in @(Get-Value $p 'conditions', 'users', $side)) { if ("$id") { $ids["$id"] = $true } }
+        }
+    }
+    try {
+        $items = foreach ($id in $ids.Keys) {
+            $group = $null
+            try {
+                $group = Invoke-AuditGraphRequest -Uri "/v1.0/groups/$id`?`$select=id,displayName,isAssignableToRole"
+            } catch {
+                $text = Get-ErrorText $_
+                if ($text -notmatch 'Request_ResourceNotFound|NotFound|\b404\b') { throw }
+                Write-Verbose "Conditional Access names group $id, which no longer exists: $text"
+            }
+            if ($null -eq $group) {
+                [ordered]@{ id = $id; found = $false; displayName = ''; isAssignableToRole = $null; members = @(); owners = @() }
+                continue
+            }
+            $members = Get-GraphCollection -Uri "/v1.0/groups/$id/transitiveMembers?`$select=id,displayName,userPrincipalName&`$top=999"
+            $owners = Get-GraphCollection -Uri "/v1.0/groups/$id/owners?`$select=id,displayName,userPrincipalName&`$top=999"
+            [ordered]@{
+                id                 = $id
+                found              = $true
+                displayName        = Get-Value $group 'displayName'
+                isAssignableToRole = Get-Value $group 'isAssignableToRole'
+                members            = @(foreach ($m in $members) { ConvertTo-DirectoryObject $m })
+                owners             = @(foreach ($o in $owners) { ConvertTo-DirectoryObject $o })
+            }
+        }
+        return (New-Dataset -Status 'Collected' -Items @($items))
+    } catch {
+        $text = Get-ErrorText $_
+        Write-Verbose "Couldn't read Conditional Access groups: $text"
         return (New-Dataset -Status (Get-GraphErrorStatus $text) -Reason $text)
     }
 }
@@ -1011,6 +1082,27 @@ function Get-AuditContext {
         $statusReason['Registration'] = "The MFA registration report has no records, though the tenant has $($usersById.Count) user(s). Microsoft fills it in the background, which can take a day in a new tenant."
     }
 
+    # Groups that Conditional Access policies name, by ID, when they were
+    # read: members by ID (users and anything else, but not the nested groups
+    # themselves, whose members are already listed), owners, and whether the
+    # group can be assigned roles.
+    $caGroups = @{}
+    foreach ($g in @(Get-Value $ds 'CaGroups', 'Items')) {
+        if ($null -eq $g) { continue }
+        $memberIds = @{}
+        $members = @(Get-Value $g 'members' | Where-Object { $null -ne $_ -and "$(Get-Value $_ '@odata.type')" -notmatch 'group$' })
+        foreach ($m in $members) { $memberIds["$(Get-Value $m 'id')"] = $true }
+        $caGroups["$(Get-Value $g 'id')"] = [pscustomobject]@{
+            Id             = "$(Get-Value $g 'id')"
+            Name           = "$(Get-Value $g 'displayName')"
+            Found          = (Get-Value $g 'found') -ne $false
+            RoleAssignable = (Get-Value $g 'isAssignableToRole') -eq $true
+            Members        = $members
+            MemberIds      = $memberIds
+            Owners         = @(Get-Value $g 'owners' | Where-Object { $null -ne $_ })
+        }
+    }
+
     $collectedAt = ConvertTo-UtcDate (Get-Value $Snapshot 'CollectedAt')
     if ($null -eq $collectedAt) { throw 'The snapshot has no CollectedAt time.' }
 
@@ -1032,6 +1124,7 @@ function Get-AuditContext {
         EligibleNoSchedule = $eligibleNoSchedule
         RoleNames     = $roleNames
         PrivilegedRoleIds = $privilegedRoleIds
+        CaGroups      = $caGroups
     }
 }
 
@@ -1155,6 +1248,71 @@ function Get-TenantPolicy {
     $items = @(Get-Value $Context.Snapshot 'Datasets', $Dataset, 'Items' | Where-Object { $null -ne $_ })
     if ($items.Count -ne 1) { throw "$Dataset holds $($items.Count) policies, not one." }
     return $items[0]
+}
+
+function Get-ActiveRoleId {
+    # Role IDs a user holds actively: directly, or through a group whose
+    # members were read. Conditional Access targets active roles only.
+    param($Context, [string]$UserId)
+    $ids = @{}
+    foreach ($a in @(Get-Value $Context.Snapshot 'Datasets', 'RoleAssignments', 'Items')) {
+        if ($null -ne $a -and "$(Get-Value $a 'principalId')" -eq $UserId) { $ids["$(Get-Value $a 'roleDefinitionId')"] = $true }
+    }
+    foreach ($h in $Context.Holders) { if ($h.PrincipalId -eq $UserId -and $h.Kind -eq 'Active') { $ids[$h.RoleId] = $true } }
+    return $ids
+}
+
+function Test-CaGroupMember {
+    # Whether a user is in any of the groups: $true, $false, or $null when a
+    # group's members weren't read and the user wasn't found in the others.
+    param($Context, $GroupIds, [string]$UserId)
+    $unknown = $false
+    foreach ($id in @($GroupIds | Where-Object { "$_" })) {
+        if (-not $Context.CaGroups.ContainsKey("$id")) { $unknown = $true; continue }
+        if ($Context.CaGroups["$id"].MemberIds.ContainsKey($UserId)) { return $true }
+    }
+    if ($unknown) { return $null }
+    return $false
+}
+
+function Get-CaPolicyReach {
+    # Whether a Conditional Access policy applies to a member account: Yes,
+    # No, or Unknown when it turns on a group whose members weren't read.
+    # Included through all users, the account itself, an active role it
+    # holds or a group it's in; excluded the same ways.
+    param($Context, $Policy, [string]$UserId)
+    $users = Get-Value $Policy 'conditions', 'users'
+    $roles = Get-ActiveRoleId $Context $UserId
+    $excluded = $false
+    if (@(Get-Value $users 'excludeUsers') -contains $UserId) { $excluded = $true }
+    if (@(Get-Value $users 'excludeRoles' | Where-Object { $roles.ContainsKey("$_") }).Count) { $excluded = $true }
+    if (-not $excluded) { $excluded = Test-CaGroupMember $Context @(Get-Value $users 'excludeGroups') $UserId }
+    if ($excluded -eq $true) { return 'No' }
+    $included = $false
+    $includeUsers = @(Get-Value $users 'includeUsers')
+    if ($includeUsers -contains 'All' -or $includeUsers -contains $UserId) { $included = $true }
+    if (@(Get-Value $users 'includeRoles' | Where-Object { $roles.ContainsKey("$_") }).Count) { $included = $true }
+    if (-not $included) { $included = Test-CaGroupMember $Context @(Get-Value $users 'includeGroups') $UserId }
+    if ($included -eq $false) { return 'No' }
+    if ($included -eq $true -and $excluded -eq $false) { return 'Yes' }
+    return 'Unknown'
+}
+
+function Get-ExternalIdentity {
+    # Where a member account signs in from when it isn't the tenant's own: a
+    # personal Microsoft account, another organization, or another provider.
+    # $null for the tenant's own accounts. Reads identities (collected from
+    # 0.6.0) and falls back to the #EXT# mark in the user principal name.
+    param($User, [string]$Upn)
+    foreach ($i in @(Get-Value $User 'identities')) {
+        if ($null -eq $i -or "$(Get-Value $i 'signInType')" -ne 'federated') { continue }
+        $issuer = "$(Get-Value $i 'issuer')"
+        if ($issuer -eq 'MicrosoftAccount') { return 'a personal Microsoft account' }
+        if ($issuer -eq 'ExternalAzureAD') { return 'an account in another Microsoft Entra organization' }
+        if ($issuer) { return "an account from $issuer" }
+    }
+    if ($Upn -like '*#EXT#@*') { return 'an account from outside the tenant (#EXT# in its user principal name)' }
+    return $null
 }
 
 function ConvertTo-Hour {
@@ -1460,6 +1618,23 @@ $AuditChecks = @(
             if ($other) { $note += " $other assignment(s) of roles that aren't privileged weren't counted." }
             if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) privileged role assignment(s) in the audit log were made directly, outside PIM, so they skipped its approval, justification and end date. Make them eligible in PIM instead.$note" $findings) }
             return (New-Outcome Pass "No privileged role was assigned outside PIM in the audit log, which goes back 7 days, or 30 with Microsoft Entra ID P1.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'ROLE-13'; Area = 'Privileged roles'; Severity = 'Medium'
+        Title = 'Privileged roles held by personal or external accounts'
+        Needs = @('RoleAssignments', 'Users')
+        Test = {
+            param($Context)
+            $findings = foreach ($h in @(Get-UserHolder $Context)) {
+                # Guests are ROLE-03's.
+                if ("$(Get-Value $h.User 'userType')" -eq 'Guest') { continue }
+                $source = Get-ExternalIdentity $h.User $h.Name
+                if ($source) { New-Finding $h.Name "$($h.Roles). Signs in with $source." }
+            }
+            $findings = @($findings)
+            if ($findings.Count -gt 0) { return (New-Outcome Fail "$($findings.Count) member account(s) holding a privileged role sign in with an identity from outside this tenant, whose password, recovery and lifecycle this tenant doesn't control. Give the role to a cloud-only account in this tenant instead." $findings) }
+            return (New-Outcome Pass "Every member account holding a privileged role is the tenant's own.")
         }
     }
     [pscustomobject]@{
@@ -1957,6 +2132,7 @@ $AuditChecks = @(
         Needs = @('ConditionalAccess', 'Users')
         Test = {
             param($Context)
+            $expected = 0
             $findings = foreach ($p in @(Get-EnabledPolicy $Context | Sort-Object { "$(Get-Value $_ 'displayName')" })) {
                 $name = "$(Get-Value $p 'displayName')"
                 $users = @(Get-Value $p 'conditions', 'users', 'excludeUsers' | Where-Object { $_ -and $_ -ne 'GuestsOrExternalUsers' -and -not $Context.BreakGlassIds.ContainsKey("$_") })
@@ -1968,13 +2144,31 @@ $AuditChecks = @(
                     }
                     New-Finding $name "Excludes $($users.Count) account(s) that aren't break-glass: $(@($names | Sort-Object) -join ', ')"
                 }
-                if ($groups.Count) { New-Finding $name "Excludes $($groups.Count) group(s); their members bypass the policy" }
+                $unread = @($groups | Where-Object { -not $Context.CaGroups.ContainsKey("$_") })
+                if ($unread.Count) { New-Finding $name "Excludes $($unread.Count) group(s) whose members weren't collected; they bypass the policy" }
+                foreach ($gid in @($groups | Where-Object { $Context.CaGroups.ContainsKey("$_") })) {
+                    $g = $Context.CaGroups["$gid"]
+                    if (-not $g.Found) { New-Finding $name "Excludes group $gid, which no longer exists. Remove it from the policy."; continue }
+                    $others = @($g.Members | Where-Object { -not $Context.BreakGlassIds.ContainsKey("$(Get-Value $_ 'id')") })
+                    $problems = [Collections.Generic.List[string]]::new()
+                    if ($others.Count) {
+                        $names = @($others | ForEach-Object { Get-OwnerName $Context $_ } | Sort-Object)
+                        $problems.Add("$($others.Count) member(s) that aren't break-glass bypass it: $($names -join ', ')")
+                    }
+                    if (-not $g.RoleAssignable) { $problems.Add("it isn't role-assignable, so Groups, User and Intune Administrators can add anyone to it") }
+                    if ($g.Owners.Count) {
+                        $owners = @($g.Owners | ForEach-Object { Get-OwnerName $Context $_ } | Sort-Object)
+                        $problems.Add("its $($g.Owners.Count) owner(s) can add anyone to it: $($owners -join ', ')")
+                    }
+                    if ($problems.Count) { New-Finding $name "Excludes group '$($g.Name)'; $($problems -join '; ')" } else { $expected++ }
+                }
                 if ($roles.Count) { New-Finding $name "Excludes $($roles.Count) directory role(s)" }
             }
             $findings = @($findings)
-            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) exclusion(s) from enabled policies, beyond the break-glass accounts. Check each is still needed." $findings) }
+            $groupNote = if ($expected) { " $expected exclusion(s) of a role-assignable, ownerless group holding only break-glass accounts are expected." } else { '' }
+            if ($findings.Count -gt 0) { return (New-Outcome Warn "$($findings.Count) exclusion(s) from enabled policies, beyond the break-glass accounts. Check each is still needed.$groupNote" $findings) }
             if (@(Get-EnabledPolicy $Context).Count -eq 0) { return (New-Outcome Pass 'No policy is enabled, so none has exclusions.') }
-            return (New-Outcome Pass 'Enabled policies exclude only the break-glass accounts.')
+            return (New-Outcome Pass "Enabled policies exclude only the break-glass accounts.$groupNote")
         }
     }
     [pscustomobject]@{
@@ -1989,9 +2183,13 @@ $AuditChecks = @(
             if ($consent -contains $LegacyConsentPolicy) { $fail.Add((New-Finding 'User consent' 'Users can consent to any app that asks for their data. Allow consent only for verified publishers and low-impact permissions, or none.')) }
             if ((Get-Value $p 'allowUserConsentForRiskyApps') -eq $true) { $fail.Add((New-Finding 'Risky apps' 'Users can consent to apps Microsoft has flagged as risky.')) }
             if ($fail.Count) { return (New-Outcome Fail 'Users can grant apps access to their data without an admin, which is how consent phishing works.' $fail.ToArray()) }
-            $custom = @($consent | Where-Object { $_ -ne $LowConsentPolicy } | ForEach-Object { New-Finding 'User consent' "Custom consent policy: $("$_".Substring(30))" })
+            $builtIn = @($LowConsentPolicy, $RecommendedConsentPolicy, $MailAppsConsentPolicy)
+            $custom = @($consent | Where-Object { $builtIn -notcontains $_ } | ForEach-Object { New-Finding 'User consent' "Custom consent policy: $("$_".Substring(30))" })
             if ($custom.Count) { return (New-Outcome Warn "Users can consent under $($custom.Count) custom policy(ies). Check what each allows." $custom) }
-            if ($consent -contains $LowConsentPolicy) { return (New-Outcome Pass "Users can consent only to verified publishers' apps asking for low-impact permissions, as Microsoft recommends.") }
+            $mail = if ($consent -contains $MailAppsConsentPolicy) { ' Users can also consent to popular mail apps reading their mail (Microsoft-managed).' } else { '' }
+            if ($consent -contains $LowConsentPolicy) { return (New-Outcome Pass "Users can consent only to verified publishers' apps asking for low-impact permissions, as Microsoft recommends.$mail") }
+            if ($consent -contains $RecommendedConsentPolicy) { return (New-Outcome Pass "Microsoft manages user consent (its recommended setting, the default): users can't consent to apps reading mail, files, calendars, chats or contacts.$mail") }
+            if ($consent -contains $MailAppsConsentPolicy) { return (New-Outcome Pass "Users can consent only to popular mail apps reading their mail (Microsoft-managed).") }
             return (New-Outcome Pass 'Users cannot consent to apps; an admin approves each one.')
         }
     }
@@ -2083,22 +2281,54 @@ $AuditChecks = @(
             if ($listed.Count -eq 0) { return (New-Outcome Warn "No break-glass accounts are listed in BreakGlassAccounts, so they can't be checked. $how" @(New-Finding 'Profile' 'List the break-glass accounts in BreakGlassAccounts.')) }
             $byUpn = @{}
             foreach ($u in $Context.UsersById.Values) { $byUpn["$(Get-Value $u 'userPrincipalName')".ToLowerInvariant()] = $u }
-            $findings = foreach ($upn in $listed) {
+            $fail = [Collections.Generic.List[object]]::new()
+            $warn = [Collections.Generic.List[object]]::new()
+            $notes = [Collections.Generic.List[string]]::new()
+            $caState = $Context.Status['ConditionalAccess']
+            $policies = @(Get-EnabledPolicy $Context | Sort-Object { "$(Get-Value $_ 'displayName')" })
+            if ($caState -ne 'Collected' -and $caState -ne 'NotLicensed') {
+                $warn.Add((New-Finding 'Conditional Access' "Not collected ($caState), so whether a policy could lock the break-glass accounts out wasn't checked."))
+            }
+            $signIns = $Context.Status['SignIns'] -eq 'Collected'
+            if (-not $signIns) { $notes.Add("Sign-in activity wasn't collected, so the last test sign-in wasn't checked.") }
+            foreach ($upn in $listed) {
                 $u = $byUpn["$upn".ToLowerInvariant()]
-                if ($null -eq $u) { New-Finding "$upn" 'Not found in the tenant.'; continue }
+                if ($null -eq $u) { $fail.Add((New-Finding "$upn" 'Not found in the tenant.')); continue }
                 $id = "$(Get-Value $u 'id')"
-                if ((Get-Value $u 'accountEnabled') -eq $false) { New-Finding "$upn" 'Disabled.' }
-                if ((Get-Value $u 'onPremisesSyncEnabled') -eq $true) { New-Finding "$upn" 'Synced from on-premises, so an outage there can lock it out.' }
+                if ((Get-Value $u 'accountEnabled') -eq $false) { $fail.Add((New-Finding "$upn" 'Disabled.')) }
+                if ((Get-Value $u 'onPremisesSyncEnabled') -eq $true) { $fail.Add((New-Finding "$upn" 'Synced from on-premises, so an outage there can lock it out.')) }
                 $ga = @($Context.Holders | Where-Object { $_.PrincipalId -eq $id -and $_.RoleId -eq $GlobalAdminRoleId })
                 if (-not @($ga | Where-Object Kind -eq 'Active')) {
                     $detail = if ($ga.Count) { 'Only eligible for Global Administrator, so it must activate through PIM before it can help.' } else { 'Does not hold Global Administrator.' }
-                    New-Finding "$upn" $detail
+                    $fail.Add((New-Finding "$upn" $detail))
+                }
+                if ($caState -eq 'Collected') {
+                    $applies = [Collections.Generic.List[string]]::new()
+                    $unknown = [Collections.Generic.List[string]]::new()
+                    foreach ($p in $policies) {
+                        switch (Get-CaPolicyReach $Context $p $id) {
+                            'Yes' { $applies.Add("$(Get-Value $p 'displayName')") }
+                            'Unknown' { $unknown.Add("$(Get-Value $p 'displayName')") }
+                        }
+                    }
+                    if ($applies.Count) { $fail.Add((New-Finding "$upn" "Enforced Conditional Access applies to it, so an outage of what a policy requires can lock it out. Exclude it from: $($applies -join '; ').")) }
+                    if ($unknown.Count) { $warn.Add((New-Finding "$upn" "Couldn't tell whether these policies apply, because their groups' members weren't collected: $($unknown -join '; ').")) }
+                }
+                if ($signIns) {
+                    $last = Get-LastSignIn $u
+                    if ($null -eq $last) {
+                        $warn.Add((New-Finding "$upn" "No sign-in recorded, so it has never been tested. Test it at least every $BreakGlassTestDays days. Sign-in activity can take a few hours to appear."))
+                    } elseif ($last -lt $Context.Now.AddDays(-$BreakGlassTestDays)) {
+                        $warn.Add((New-Finding "$upn" "Last signed in $(Format-AuditDate $last). Test it at least every $BreakGlassTestDays days."))
+                    }
                 }
             }
-            $findings = @($findings)
-            if ($findings.Count) { return (New-Outcome Fail "$($findings.Count) problem(s) with the break-glass accounts would stop them working in an emergency." $findings) }
-            if ($listed.Count -lt 2) { return (New-Outcome Warn "Only one break-glass account is listed. $how" @(New-Finding "$($listed[0])" 'The only break-glass account.')) }
-            return (New-Outcome Pass "All $($listed.Count) break-glass accounts exist, are enabled and cloud-only, and hold Global Administrator.")
+            $note = if ($notes.Count) { ' ' + ($notes -join ' ') } else { '' }
+            if ($fail.Count) { return (New-Outcome Fail "$($fail.Count) problem(s) with the break-glass accounts would stop them working in an emergency.$note" @($fail.ToArray() + $warn.ToArray())) }
+            if ($listed.Count -lt 2) { $warn.Add((New-Finding "$($listed[0])" "The only break-glass account. $how")) }
+            if ($warn.Count) { return (New-Outcome Warn "$($warn.Count) thing(s) to review about the break-glass accounts.$note" $warn.ToArray()) }
+            $tested = if ($signIns) { " and signed in within $BreakGlassTestDays days" } else { '' }
+            return (New-Outcome Pass "All $($listed.Count) break-glass accounts exist, are enabled and cloud-only, hold Global Administrator, are outside every enforced Conditional Access policy$tested.$note")
         }
     }
 )

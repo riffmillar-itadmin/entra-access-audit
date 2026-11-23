@@ -67,13 +67,13 @@ Describe 'The Westmark fixture as it is' {
     It 'gives each check the expected result' {
         $expected = [ordered]@{
             'ROLE-01' = 'Pass'; 'ROLE-02' = 'Fail'; 'ROLE-03' = 'Fail'; 'ROLE-04' = 'Fail'; 'ROLE-05' = 'Fail'; 'ROLE-06' = 'Warn'
-            'ROLE-07' = 'Fail'; 'ROLE-08' = 'Warn'; 'ROLE-09' = 'Fail'; 'ROLE-10' = 'Warn'; 'ROLE-11' = 'Fail'; 'ROLE-12' = 'Warn'
+            'ROLE-07' = 'Fail'; 'ROLE-08' = 'Warn'; 'ROLE-09' = 'Fail'; 'ROLE-10' = 'Warn'; 'ROLE-11' = 'Fail'; 'ROLE-12' = 'Warn'; 'ROLE-13' = 'Pass'
             'STALE-01' = 'Fail'; 'STALE-02' = 'Fail'; 'STALE-03' = 'Fail'; 'STALE-04' = 'Warn'
             'MFA-01' = 'Fail'; 'MFA-02' = 'Warn'; 'MFA-03' = 'Fail'
             'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
             'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'; 'SVC-05' = 'Fail'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
-            'TEN-01' = 'Fail'; 'TEN-02' = 'Warn'; 'TEN-03' = 'Warn'; 'TEN-04' = 'Warn'; 'TEN-05' = 'Pass'; 'TEN-06' = 'Pass'
+            'TEN-01' = 'Fail'; 'TEN-02' = 'Warn'; 'TEN-03' = 'Warn'; 'TEN-04' = 'Warn'; 'TEN-05' = 'Pass'; 'TEN-06' = 'Warn'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
         foreach ($id in $expected.Keys) { $Fixture[$id].Status | Should -Be $expected[$id] -Because $id }
@@ -491,6 +491,48 @@ Describe 'Privileged roles' {
         # ROLE-07 and ROLE-08 read data every schema has.
         $r['ROLE-07'].Status | Should -Be 'Fail'
         $r['ROLE-08'].Status | Should -Be 'Warn'
+    }
+
+    It 'ROLE-13 passes when privileged members are the tenant''s own, leaving guests to ROLE-03' {
+        $r = Get-Result (Get-Fixture)
+        $r['ROLE-13'].Status | Should -Be 'Pass'
+        # A guest holds a privileged role in the fixture; ROLE-03 reports it.
+        $r['ROLE-03'].Status | Should -Be 'Fail'
+    }
+
+    It 'ROLE-13 fails on a privileged role held by a personal Microsoft account' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Users' 'userPrincipalName' 'admin.lee@westmark.example').identities = @(
+            [pscustomobject]@{ signInType = 'federated'; issuer = 'MicrosoftAccount'; issuerAssignedId = $null })
+        $r = (Get-Result $s)['ROLE-13']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('admin.lee@westmark.example')
+        $r.Findings[0].Detail | Should -Be 'Global Administrator. Signs in with a personal Microsoft account.'
+    }
+
+    It 'ROLE-13 names an account from another organization' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Users' 'userPrincipalName' 'dana.kim@westmark.example').identities = @(
+            [pscustomobject]@{ signInType = 'federated'; issuer = 'ExternalAzureAD'; issuerAssignedId = $null })
+        $r = (Get-Result $s)['ROLE-13']
+        $r.Status | Should -Be 'Fail'
+        $r.Findings[0].Detail | Should -Match 'Signs in with an account in another Microsoft Entra organization\.$'
+    }
+
+    It 'ROLE-13 falls back to #EXT# in the name on a snapshot without identities' {
+        $s = Get-Fixture
+        $u = Get-FixtureItem $s 'Users' 'userPrincipalName' 'admin.lee@westmark.example'
+        $u.userPrincipalName = 'admin.lee_mail.example#EXT#@westmark.example'
+        foreach ($user in $s.Datasets.Users.Items) { $user.PSObject.Properties.Remove('identities') }
+        $r = (Get-Result $s)['ROLE-13']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('admin.lee_mail.example#EXT#@westmark.example')
+        $r.Findings[0].Detail | Should -Match '#EXT# in its user principal name'
+    }
+
+    It 'ROLE-13 is skipped without the role assignments' {
+        $s = Get-Fixture; Set-NotCollected $s 'RoleAssignments' 'Denied'
+        (Get-Result $s)['ROLE-13'].Status | Should -Be 'Skipped'
     }
 }
 
@@ -983,8 +1025,40 @@ Describe 'Conditional Access' {
         $r.Status | Should -Be 'Warn'
         @($r.Findings | ForEach-Object Detail) | Should -Be @(
             "Excludes 1 account(s) that aren't break-glass: jo.park@westmark.example"
-            'Excludes 1 group(s); their members bypass the policy'
+            ("Excludes group 'Travel Exemptions'; 1 member(s) that aren't break-glass bypass it: sam.ortiz@westmark.example; " +
+                "it isn't role-assignable, so Groups, User and Intune Administrators can add anyone to it; " +
+                'its 1 owner(s) can add anyone to it: dana.kim@westmark.example')
         )
+    }
+
+    It 'CA-05 expects a role-assignable, ownerless group holding only break-glass accounts' {
+        $s = Get-Fixture
+        $p = Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for Office 365'
+        $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers | Where-Object { $_ -ne (Get-UserId $s 'jo.park@westmark.example') })
+        $g = $s.Datasets.CaGroups.Items[0]
+        $g.isAssignableToRole = $true
+        $g.owners = @()
+        $g.members = @([pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = (Get-UserId $s 'bg.one@westmark.example'); userPrincipalName = 'bg.one@westmark.example' })
+        $r = (Get-Result $s)['CA-05']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '1 exclusion\(s\) of a role-assignable, ownerless group holding only break-glass accounts are expected'
+    }
+
+    It 'CA-05 flags an excluded group that no longer exists' {
+        $s = Get-Fixture
+        $g = $s.Datasets.CaGroups.Items[0]
+        $g.found = $false; $g.members = @(); $g.owners = @()
+        $r = (Get-Result $s)['CA-05']
+        @($r.Findings | ForEach-Object Detail) | Should -Contain 'Excludes group 00000000-0000-4000-8000-000000000103, which no longer exists. Remove it from the policy.'
+    }
+
+    It 'CA-05 still warns on an excluded group when its members weren''t collected' {
+        $s = Get-Fixture
+        $s.SchemaVersion = 5
+        $s.Datasets.PSObject.Properties.Remove('CaGroups')
+        $r = (Get-Result $s)['CA-05']
+        $r.Status | Should -Be 'Warn'
+        @($r.Findings | ForEach-Object Detail) | Should -Contain "Excludes 1 group(s) whose members weren't collected; they bypass the policy"
     }
 
     It 'CA-05 passes when only break-glass accounts are excluded' {
@@ -1015,6 +1089,16 @@ Describe 'Tenant settings' {
             param($Snapshot, [string]$Dataset)
             $Snapshot.Datasets.$Dataset.Items[0]
         }
+
+        function Set-BreakGlassTested {
+            # Gives both break-glass accounts a recent test sign-in.
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Changes a test copy of the fixture in memory only.')]
+            param($Snapshot)
+            foreach ($upn in 'bg.one@westmark.example', 'bg.two@westmark.example') {
+                $u = Get-FixtureItem $Snapshot 'Users' 'userPrincipalName' $upn
+                $u | Add-Member -NotePropertyName signInActivity -NotePropertyValue ([pscustomobject]@{ lastSignInDateTime = '2026-10-15T09:00:00Z' }) -Force
+            }
+        }
     }
 
     It 'TEN-01 fails when users can consent to any app' {
@@ -1039,6 +1123,18 @@ Describe 'Tenant settings' {
         $r = (Get-Result $s)['TEN-01']
         $r.Status | Should -Be 'Warn'
         $r.Findings[0].Detail | Should -Be 'Custom consent policy: westmark-sales-apps'
+    }
+
+    It 'TEN-01 passes on Microsoft''s managed consent policies, which are not custom' {
+        # Regression: 0.5.1 warned that the recommended and mail client
+        # policies, the default in a new tenant, were custom.
+        $s = Get-Fixture
+        (Get-Policy $s 'AuthorizationPolicy').defaultUserRolePermissions.permissionGrantPoliciesAssigned = @($RecommendedConsentPolicy, $MailAppsConsentPolicy)
+        $r = (Get-Result $s)['TEN-01']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^Microsoft manages user consent'
+        $r.Summary | Should -Match 'popular mail apps'
+        @($r.Findings).Count | Should -Be 0
     }
 
     It 'TEN-01 passes with consent for verified publishers only, or none' {
@@ -1154,9 +1250,80 @@ Describe 'Tenant settings' {
     }
 
     It 'TEN-06 passes when both break-glass accounts are ready' {
-        $r = (Get-Result (Get-Fixture))['TEN-06']
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $r = (Get-Result $s)['TEN-06']
         $r.Status | Should -Be 'Pass'
-        $r.Summary | Should -Match '^All 2 break-glass accounts'
+        $r.Summary | Should -Match '^All 2 break-glass accounts .* outside every enforced Conditional Access policy and signed in within 90 days\.$'
+    }
+
+    It 'TEN-06 warns on a break-glass account never tested, or not in 90 days' {
+        $r = (Get-Result (Get-Fixture))['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
+            'bg.one@westmark.example: Last signed in 2026-01-15. Test it at least every 90 days.'
+            'bg.two@westmark.example: No sign-in recorded, so it has never been tested. Test it at least every 90 days. Sign-in activity can take a few hours to appear.'
+        )
+    }
+
+    It 'TEN-06 says the test sign-in was not checked without sign-in activity' {
+        $s = Get-Fixture; Set-NotCollected $s 'SignIns'
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match 'Conditional Access policy\. Sign-in activity wasn''t collected, so the last test sign-in wasn''t checked\.$'
+    }
+
+    It 'TEN-06 fails on a break-glass account an enforced Conditional Access policy reaches' {
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $two = Get-UserId $s 'bg.two@westmark.example'
+        foreach ($name in 'Require MFA for Office 365', 'Block legacy authentication') {
+            $p = Get-FixtureItem $s 'ConditionalAccess' 'displayName' $name
+            $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers | Where-Object { $_ -ne $two })
+        }
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Fail'
+        # The report-only policy enforces nothing, so it isn't named.
+        @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
+            'bg.two@westmark.example: Enforced Conditional Access applies to it, so an outage of what a policy requires can lock it out. Exclude it from: Require MFA for Office 365.'
+        )
+    }
+
+    It 'TEN-06 counts an exclusion through a group or a role, and a policy aimed elsewhere' {
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $two = Get-UserId $s 'bg.two@westmark.example'
+        foreach ($p in $s.Datasets.ConditionalAccess.Items) { $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers | Where-Object { $_ -ne $two }) }
+        $s.Datasets.CaGroups.Items[0].members = @($s.Datasets.CaGroups.Items[0].members) + [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = $two; userPrincipalName = 'bg.two@westmark.example' }
+        (Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for admins').conditions.users.excludeRoles = @($GlobalAdminRoleId)
+        (Get-Result $s)['TEN-06'].Status | Should -Be 'Pass'
+        # A policy for one group bg.two isn't in doesn't reach it either.
+        (Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for admins').conditions.users.excludeRoles = @()
+        $admins = Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for admins'
+        $admins.conditions.users.includeRoles = @()
+        $admins.conditions.users.includeGroups = @('00000000-0000-4000-8000-000000000103')
+        $s.Datasets.CaGroups.Items[0].members = @($s.Datasets.CaGroups.Items[0].members | Where-Object { $_.id -ne $two })
+        $p = Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for Office 365'
+        $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers) + $two
+        (Get-Result $s)['TEN-06'].Status | Should -Be 'Pass'
+    }
+
+    It 'TEN-06 warns when a policy turns on a group whose members weren''t collected' {
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $s.SchemaVersion = 5
+        $s.Datasets.PSObject.Properties.Remove('CaGroups')
+        $two = Get-UserId $s 'bg.two@westmark.example'
+        $p = Get-FixtureItem $s 'ConditionalAccess' 'displayName' 'Require MFA for Office 365'
+        $p.conditions.users.excludeUsers = @($p.conditions.users.excludeUsers | Where-Object { $_ -ne $two })
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
+            "bg.two@westmark.example: Couldn't tell whether these policies apply, because their groups' members weren't collected: Require MFA for Office 365."
+        )
+    }
+
+    It 'TEN-06 warns when Conditional Access was denied, rather than passing' {
+        $s = Get-Fixture; Set-BreakGlassTested $s; Set-NotCollected $s 'ConditionalAccess' 'Denied'
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('Conditional Access')
     }
 
     It 'TEN-06 fails on a break-glass account that is missing, disabled, synced or without Global Administrator' {
@@ -1167,6 +1334,7 @@ Describe 'Tenant settings' {
         Remove-FixtureItem $s 'RoleAssignments' 'id' 'ra-03'
         $bgProfile = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1')
         $bgProfile.BreakGlassAccounts = @('bg.one@westmark.example', 'bg.two@westmark.example', 'bg.three@westmark.example')
+        Set-BreakGlassTested $s
         $r = (Get-Result $s $bgProfile)['TEN-06']
         $r.Status | Should -Be 'Fail'
         @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
@@ -1194,9 +1362,10 @@ Describe 'Tenant settings' {
         $r.Summary | Should -Match '^No break-glass accounts are listed'
         $oneProfile = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1')
         $oneProfile.BreakGlassAccounts = @('bg.one@westmark.example')
+        Set-BreakGlassTested $s
         $r = (Get-Result $s $oneProfile)['TEN-06']
         $r.Status | Should -Be 'Warn'
-        $r.Summary | Should -Match '^Only one break-glass account'
+        $r.Findings[0].Detail | Should -Match '^The only break-glass account\.'
     }
 
     It 'TEN-06 is skipped without the role assignments' {
@@ -1205,7 +1374,7 @@ Describe 'Tenant settings' {
     }
 
     It 'TEN-01 to TEN-05 are skipped on a snapshot from before schema 5, not passed' {
-        $s = Get-Fixture
+        $s = Get-Fixture; Set-BreakGlassTested $s
         $s.SchemaVersion = 4
         foreach ($name in 'AuthorizationPolicy', 'AuthMethodsPolicy', 'CrossTenantAccess') { $s.Datasets.PSObject.Properties.Remove($name) }
         $r = Get-Result $s

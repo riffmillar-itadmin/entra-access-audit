@@ -6,8 +6,9 @@ and how. It reads the tenant through Microsoft Graph and reports on seven areas:
 - **Privileged roles:** how many Global Administrators there are, roles held
   permanently or eligible with no end date, roles people granted themselves,
   weak PIM activation rules, roles assigned outside PIM, owners who can add
-  themselves to a role-holding group, guests and on-premises synced accounts in admin roles, and admins
-  without phishing-resistant MFA. A role held through a group counts for each
+  themselves to a role-holding group, guests, on-premises synced accounts and
+  personal or external accounts in admin roles, and admins without
+  phishing-resistant MFA. A role held through a group counts for each
   member of the group.
 - **Stale accounts:** enabled members and guests that haven't signed in for 90
   days, accounts that never signed in, and guest invitations nobody accepted.
@@ -23,7 +24,7 @@ and how. It reads the tenant through Microsoft Graph and reports on seven areas:
   over an app with high-risk access.
 - **Conditional Access:** whether MFA is required for everyone and for admins,
   whether legacy authentication is blocked, policies left in report-only mode,
-  and who is excluded from them.
+  and who is excluded from them, directly or through a group.
 - **Tenant settings:** whether users can consent to apps, register apps or
   create tenants, what guests can see and who can invite them, whether text
   message and voice call are allowed for sign-in, cross-tenant defaults open
@@ -74,13 +75,13 @@ writes only its report files, and a snapshot when you ask for one.
 
 | Scope | What it reads |
 | --- | --- |
-| `User.Read.All` | Users and guests, enabled state, creation date, on-premises sync, invitation state |
+| `User.Read.All` | Users and guests, enabled state, creation date, on-premises sync, invitation state, and where each signs in from (its identities) |
 | `AuditLog.Read.All` | Sign-in activity, the MFA registration report, and role changes in the directory audit log |
 | `RoleManagement.Read.Directory` | Directory role definitions, assignments, PIM eligibility and schedules, and PIM's activation settings for each role |
 | `Application.Read.All` | App registrations and enterprise apps (service principals): their secrets, certificates, owners, publisher and state, and Graph permissions granted to apps |
 | `Policy.Read.All` | Conditional Access policies, security defaults, the authorization policy (user consent, default user permissions, guest settings), the authentication methods policy and the default cross-tenant access settings |
 | `DelegatedPermissionGrant.Read.All` | Delegated permissions that admins or users consented to for apps |
-| `GroupMember.Read.All` | Members and owners of the groups that hold a directory role |
+| `GroupMember.Read.All` | Members and owners of the groups that hold a directory role, and of the groups Conditional Access policies include or exclude |
 
 `Application.Read.All` also reads the owners of the enterprise apps that hold a
 Microsoft Graph permission or a role. For PIM's activation settings Microsoft
@@ -99,9 +100,9 @@ Some of this data needs a premium licence:
 
 | Data | Needs | Checks that use it |
 | --- | --- | --- |
-| Sign-in activity | Microsoft Entra ID P1 | STALE-01, STALE-02, STALE-03 |
+| Sign-in activity | Microsoft Entra ID P1 | STALE-01, STALE-02, STALE-03, and TEN-06's test sign-in |
 | MFA registration report | Microsoft Entra ID P1 | ROLE-05, MFA-01, MFA-02, MFA-03 |
-| Conditional Access policies | Microsoft Entra ID P1 | CA-01 to CA-05 |
+| Conditional Access policies | Microsoft Entra ID P1 | CA-01 to CA-05, and TEN-06's exclusion check |
 | PIM eligibility and schedules | Microsoft Entra ID P2 | ROLE-01, ROLE-02, ROLE-07 (see below), ROLE-08, ROLE-10 |
 | PIM activation settings | Microsoft Entra ID P2 | ROLE-10 |
 | PIM assignment schedules | Microsoft Entra ID P2 | ROLE-12 (without PIM, every assignment is made outside it) |
@@ -135,6 +136,7 @@ report says why. Two cases are different:
 | ROLE-10 | Privileged roles | Medium | Weak PIM activation rules for privileged roles | Warn for a privileged role with eligible accounts whose activation needs no MFA or authentication context, lasts longer than `MaxActivationHours` (8), or, for Global and Privileged Role Administrator, needs no approval. |
 | ROLE-11 | Privileged roles | High | Owners of groups that hold privileged roles | Fail for an owner of a role-holding group, who can add themselves to it, unless they are a Global or Privileged Role Administrator or break-glass. |
 | ROLE-12 | Privileged roles | Medium | Privileged roles assigned outside PIM | Warn for a privileged role assigned directly, outside PIM, in the directory audit log, leaving out break-glass accounts. |
+| ROLE-13 | Privileged roles | Medium | Privileged roles held by personal or external accounts | Fail for a member account holding a privileged role that signs in with a personal Microsoft account or an account from another organization, such as the personal account that created the tenant. Guests are ROLE-03's. |
 | STALE-01 | Stale accounts | Medium | Enabled members with no recent sign-in | Fail for an enabled member whose last sign-in is older than `StaleDays` (90). |
 | STALE-02 | Stale accounts | Low | Enabled members that never signed in | Fail for an enabled member older than `StaleDays` with no sign-in. |
 | STALE-03 | Stale accounts | Medium | Enabled guests with no recent sign-in | Fail for an enabled guest with no sign-in in `StaleDays`. |
@@ -158,13 +160,13 @@ report says why. Two cases are different:
 | CA-02 | Conditional Access | High | MFA required for administrators | Fail unless security defaults are on, or an enabled policy requires MFA for all users or for Global Administrators on all apps. |
 | CA-03 | Conditional Access | High | Legacy authentication blocked | Fail unless security defaults are on, or an enabled policy blocks Exchange ActiveSync and other clients for all users. |
 | CA-04 | Conditional Access | Low | Policies left in report-only mode | Warn for each report-only policy. |
-| CA-05 | Conditional Access | Medium | Exclusions from enabled policies | Warn for excluded accounts that aren't break-glass, and for excluded groups and roles. |
-| TEN-01 | Tenant settings | High | Users can consent to apps | Fail when users can consent to any app, or to apps Microsoft flags as risky; Warn for a custom consent policy. Consent for verified publishers and low-impact permissions only, Microsoft's recommendation, passes. |
+| CA-05 | Conditional Access | Medium | Exclusions from enabled policies | Warn for excluded accounts that aren't break-glass, and for excluded roles. For an excluded group, Warn for members that aren't break-glass, a group that isn't role-assignable (Groups, User and Intune Administrators can add anyone to it), owners who can add members, and a group that no longer exists. A role-assignable, ownerless group of break-glass accounts only passes. |
+| TEN-01 | Tenant settings | High | Users can consent to apps | Fail when users can consent to any app, or to apps Microsoft flags as risky; Warn for a custom consent policy. Consent for verified publishers and low-impact permissions only, and Microsoft's managed recommended and mail-app policies, pass. |
 | TEN-02 | Tenant settings | Medium | Users can register apps or create tenants | Warn for each of these default user permissions that is on. |
 | TEN-03 | Tenant settings | Medium | Guest access and invitations | Warn when guests have the same directory access as members, anyone including guests can invite guests, or anyone with a verified email can join. |
 | TEN-04 | Tenant settings | Medium | Text message and voice call sign-in methods | Warn for each enabled in the authentication methods policy, and notes when the legacy MFA and SSPR settings still apply. |
 | TEN-05 | Tenant settings | Low | Cross-tenant access defaults | Warn when the defaults allow B2B direct connect, or redeem invitations automatically, for every other organization. |
-| TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, or not an active Global Administrator; Warn when none or only one is listed. |
+| TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, not an active Global Administrator, or reached by an enforced Conditional Access policy. Warn when one hasn't signed in within 90 days, when it can't be told whether a policy reaches one, and when none or only one is listed. |
 
 Privileged roles are Global Administrator and the other built-in roles that
 can take over the tenant or its security, such as Privileged Role
@@ -224,8 +226,12 @@ Name your emergency access (break-glass) accounts in `BreakGlassAccounts`.
 They are meant to hold Global Administrator permanently, stay out of
 Conditional Access and sign in rarely, so without this they show up as
 findings. They still count toward ROLE-01 and still need MFA. TEN-06 checks
-that each exists, is enabled and cloud-only, and holds Global Administrator,
-and warns when fewer than two are listed.
+them against Microsoft's guidance for emergency access accounts: each exists,
+is enabled and cloud-only, holds Global Administrator actively (not only
+eligible through PIM), is outside every enforced Conditional Access policy,
+directly or through an excluded group or role, and has signed in within 90
+days, so you know it works. It warns when fewer than two are listed. Graph's
+sign-in activity can take a few hours to show a test sign-in.
 
 A setting the script doesn't know stops the run, so a misspelt one can't be
 silently ignored.
@@ -312,6 +318,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.6.0 | 2026-11-23 | Now with 43 checks, from testing two break-glass accounts in a lab tenant. TEN-06 fails a break-glass account that an enforced Conditional Access policy reaches, and warns when one hasn't signed in within 90 days. CA-05 names who an excluded group lets through, and flags a group that isn't role-assignable or has owners, or no longer exists. ROLE-13 privileged roles held by personal or external accounts, such as the personal account that created the tenant. Fix: TEN-01 warned that Microsoft's managed consent policies, the default in a new tenant, were custom. No new scope: the groups are read with `GroupMember.Read.All`, and identities with `User.Read.All`. Snapshot schema 6; on older snapshots, TEN-06 and CA-05 say when a group's members weren't collected, and ROLE-13 reads `#EXT#` in the name. |
 | 0.5.1 | 2026-11-16 | The test and lint scripts' summary uses the same layout as the JobSweep and endpoint scan suites: one banner line with the script name, status and counts, the target, run time and PowerShell version on their own lines, and a RESULT bar. The table keeps its Suite and Fixtures columns, and shows Notes only when a row has something to explain. Tests for the summary block added. |
 | 0.5.0 | 2026-11-16 | Now with 42 checks. New Tenant settings area: TEN-01 user consent to apps, TEN-02 users who can register apps or create tenants, TEN-03 guest access and invitations, TEN-04 text message and voice call sign-in, TEN-05 cross-tenant defaults, TEN-06 break-glass accounts that would fail in an emergency. ROLE-12 privileged roles assigned outside PIM. Fix: ROLE-09 listed a self-grant made outside PIM twice, because PIM logs it a second time. No new scope: the settings are read with `Policy.Read.All`. Snapshot schema 5; on older snapshots TEN-01 to TEN-05 are Skipped. |
 | 0.4.1 | 2026-11-13 | Snapshots keep only the four PIM activation rules ROLE-10 reads, with only the fields it reads, so a live snapshot is about a third of the size. |
