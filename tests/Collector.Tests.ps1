@@ -94,6 +94,12 @@ BeforeAll {
                     [pscustomobject]@{ '@odata.type' = '#microsoft.graph.smsAuthenticationMethodConfiguration'; id = 'Sms'; state = 'enabled'; excludeTargets = @()
                         includeTargets = @([pscustomobject]@{ targetType = 'group'; id = 'all_users'; isUsableForSignIn = $false }) }
                     [pscustomobject]@{ '@odata.type' = '#microsoft.graph.voiceAuthenticationMethodConfiguration'; id = 'Voice'; state = 'disabled'; isOfficePhoneAllowed = $false; excludeTargets = @() }) }
+            '/v1.0/directory/subscriptions' = ConvertTo-Page @([pscustomobject]@{ id = 'sub1'; commerceSubscriptionId = 'cs1'; ownerId = 'o1'; ownerTenantId = 't1'; ownerType = 'User'
+                    skuId = 'sku1'; skuPartNumber = 'AAD_PREMIUM_P2'; status = 'Enabled'; isTrial = $true; totalLicenses = 100
+                    createdDateTime = [datetime]::new(2026, 10, 14, 0, 0, 0, [DateTimeKind]::Utc); nextLifecycleDateTime = '2026-11-13T00:00:00Z'
+                    serviceStatus = @(
+                        [pscustomobject]@{ servicePlanId = 'sp-p1'; servicePlanName = 'AAD_PREMIUM'; provisioningStatus = 'Success'; appliesTo = 'User' }
+                        [pscustomobject]@{ servicePlanId = 'sp-p2'; servicePlanName = 'AAD_PREMIUM_P2'; provisioningStatus = 'Success'; appliesTo = 'User' }) })
             '/v1.0/policies/crossTenantAccessPolicy/default' = [pscustomobject]@{ isServiceDefault = $true
                 inboundTrust = [pscustomobject]@{ isMfaAccepted = $false }
                 automaticUserConsentSettings = [pscustomobject]@{ inboundAllowed = $false; outboundAllowed = $false }
@@ -189,6 +195,24 @@ Describe 'Get-TenantSnapshot' {
         @($s.Datasets.AuthMethodsPolicy.Items).Count | Should -Be 0
         $s.Datasets.AuthorizationPolicy.Status | Should -Be 'Collected'
         $s.Datasets.CrossTenantAccess.Status | Should -Be 'Collected'
+    }
+
+    It 'keeps the subscriptions to the fields TEN-07 reads, with service plans by name' {
+        $s = Get-Collected
+        $subs = @($s.Datasets.Subscriptions.Items)
+        $subs.Count | Should -Be 1
+        @($subs[0].PSObject.Properties.Name) | Should -Be @('skuId', 'skuPartNumber', 'status', 'isTrial', 'createdDateTime', 'nextLifecycleDateTime', 'totalLicenses', 'servicePlans')
+        @($subs[0].servicePlans) | Should -Be @('AAD_PREMIUM', 'AAD_PREMIUM_P2')
+        $subs[0].isTrial | Should -BeTrue
+        ConvertTo-UtcDate $subs[0].nextLifecycleDateTime | Should -Be ([datetime]::new(2026, 11, 13, 0, 0, 0, [DateTimeKind]::Utc))
+    }
+
+    It 'marks the subscriptions Denied when Organization.Read.All was not granted, and carries on' {
+        $Fail['/v1.0/directory/subscriptions'] = $Denied
+        $s = Get-Collected
+        $s.Datasets.Subscriptions.Status | Should -Be 'Denied'
+        @($s.Datasets.Subscriptions.Items).Count | Should -Be 0
+        $s.Datasets.ConditionalAccess.Status | Should -Be 'Collected'
     }
 
     It 'sends nothing but the reads it lists' {

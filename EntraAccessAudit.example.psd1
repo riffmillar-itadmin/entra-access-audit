@@ -28,6 +28,10 @@
     # (ROLE-10).
     MaxActivationHours    = 8
 
+    # Days ahead to warn that a trial carrying Microsoft Entra ID P1 or P2 ends,
+    # when nothing else carries it (TEN-07).
+    LicenceExpiryDays     = 30
+
     # Emergency access accounts, by user principal name. They are expected to
     # hold Global Administrator permanently, to be excluded from Conditional
     # Access and to sign in rarely, so ROLE-02, ROLE-07, ROLE-08, ROLE-11,

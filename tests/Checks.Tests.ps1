@@ -73,7 +73,7 @@ Describe 'The Westmark fixture as it is' {
             'APP-01' = 'Warn'; 'APP-02' = 'Warn'; 'APP-03' = 'Warn'; 'APP-04' = 'Fail'; 'APP-05' = 'Warn'; 'APP-06' = 'Fail'; 'APP-07' = 'Warn'
             'SVC-01' = 'Warn'; 'SVC-02' = 'Fail'; 'SVC-03' = 'Fail'; 'SVC-04' = 'Warn'; 'SVC-05' = 'Fail'
             'CA-01' = 'Fail'; 'CA-02' = 'Pass'; 'CA-03' = 'Fail'; 'CA-04' = 'Warn'; 'CA-05' = 'Warn'
-            'TEN-01' = 'Fail'; 'TEN-02' = 'Warn'; 'TEN-03' = 'Warn'; 'TEN-04' = 'Warn'; 'TEN-05' = 'Pass'; 'TEN-06' = 'Warn'
+            'TEN-01' = 'Fail'; 'TEN-02' = 'Warn'; 'TEN-03' = 'Warn'; 'TEN-04' = 'Warn'; 'TEN-05' = 'Pass'; 'TEN-06' = 'Warn'; 'TEN-07' = 'Warn'
         }
         @($expected.Keys | Sort-Object) | Should -Be @($AuditChecks | ForEach-Object Id | Sort-Object)
         foreach ($id in $expected.Keys) { $Fixture[$id].Status | Should -Be $expected[$id] -Because $id }
@@ -1383,6 +1383,83 @@ Describe 'Tenant settings' {
             $r[$id].Summary | Should -Match 'was not collected \(NotCollected\): The snapshot has schema 4, from before' -Because $id
         }
         $r['TEN-06'].Status | Should -Be 'Pass'
+    }
+
+    It 'TEN-07 warns on a trial that is the only source of P2, naming the checks that need P2' {
+        $r = (Get-Result (Get-Fixture))['TEN-07']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('AAD_PREMIUM_P2 (trial)')
+        $r.Findings[0].Detail | Should -Match '^Carries Microsoft Entra ID P2\. The trial ends 2026-11-13, in 12 day\(s\)'
+        $r.Findings[0].Detail | Should -Match 'Without it, these checks are Skipped: ROLE-08, ROLE-10, ROLE-12\.$'
+    }
+
+    It 'TEN-07 passes when a paid subscription carries P2 too' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'SPE_E3').servicePlans = @('AAD_PREMIUM', 'AAD_PREMIUM_P2')
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Be 'Microsoft Entra ID P1 and Microsoft Entra ID P2 come from a subscription that isn''t a trial ending within 30 days.'
+    }
+
+    It 'TEN-07 ignores a paid subscription''s renewal date, even within the window' {
+        # The fixture's paid SPE_E3 next changes state 2026-11-15, 14 days
+        # after collection; for a paid subscription that is its renewal.
+        $s = Get-Fixture; Remove-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'AAD_PREMIUM_P2'
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^Microsoft Entra ID P1 comes from'
+    }
+
+    It 'TEN-07 lists a trial once, with the checks for P1 and P2, when it is the only source of both' {
+        $s = Get-Fixture; Remove-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'SPE_E3'
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Warn'
+        Get-Subject $r | Should -Be @('AAD_PREMIUM_P2 (trial)')
+        $r.Findings[0].Detail | Should -Match '^Carries Microsoft Entra ID P1 and Microsoft Entra ID P2\.'
+        $r.Findings[0].Detail | Should -Match 'Without them, these checks are Skipped: ROLE-05, ROLE-08, .*STALE-01, .*CA-05\.$'
+    }
+
+    It 'TEN-07 follows LicenceExpiryDays' {
+        $p = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1'); $p.LicenceExpiryDays = 10
+        $r = (Get-Result (Get-Fixture) $p)['TEN-07']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match 'within 10 days'
+    }
+
+    It 'TEN-07 says when a trial has already ended' {
+        $s = Get-Fixture
+        (Get-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'AAD_PREMIUM_P2').nextLifecycleDateTime = '2026-10-30T00:00:00Z'
+        (Get-Result $s)['TEN-07'].Findings[0].Detail | Should -Match 'The trial ended 2026-10-30,'
+    }
+
+    It 'TEN-07 fails on the only source of P1 when it is <State>' -ForEach @(
+        @{ State = 'Warning'; Expected = 'Expired, and in its grace period until 2026-11-15; renew it before then\.' }
+        @{ State = 'Suspended'; Expected = 'Suspended, so what it carries is already off\.' }
+        @{ State = 'LockedOut'; Expected = 'LockedOut, so what it carries is already off\.' }
+    ) {
+        $s = Get-Fixture; Remove-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'AAD_PREMIUM_P2'
+        (Get-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'SPE_E3').status = $State
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Fail'
+        Get-Subject $r | Should -Be @('SPE_E3')
+        $r.Findings[0].Detail | Should -Match $Expected
+    }
+
+    It 'TEN-07 leaves out deleted subscriptions and passes when nothing carries P1 or P2' {
+        $s = Get-Fixture; Remove-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'AAD_PREMIUM_P2'
+        (Get-FixtureItem $s 'Subscriptions' 'skuPartNumber' 'SPE_E3').status = 'Deleted'
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Pass'
+        $r.Summary | Should -Match '^No subscription carries Microsoft Entra ID P1 or P2'
+    }
+
+    It 'TEN-07 is skipped without the subscriptions, and on a snapshot from before schema 7' {
+        $s = Get-Fixture; Set-NotCollected $s 'Subscriptions' 'Denied'
+        (Get-Result $s)['TEN-07'].Status | Should -Be 'Skipped'
+        $s = Get-Fixture; $s.SchemaVersion = 6; $s.Datasets.PSObject.Properties.Remove('Subscriptions')
+        $r = (Get-Result $s)['TEN-07']
+        $r.Status | Should -Be 'Skipped'
+        $r.Summary | Should -Match 'The snapshot has schema 6, from before Subscriptions was collected'
     }
 }
 

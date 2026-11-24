@@ -1,6 +1,6 @@
 {
-  "SchemaVersion": 6,
-  "ToolVersion": "0.6.0",
+  "SchemaVersion": 7,
+  "ToolVersion": "0.7.0",
   "CollectedAt": "2026-11-01T12:00:00Z",
   "TenantId": "00000000-0000-4000-8000-000000000999",
   "Datasets": {
@@ -1385,6 +1385,51 @@
               ]
             }
           }
+        }
+      ]
+    },
+    "Subscriptions": {
+      "Status": "Collected",
+      "Reason": "",
+      "Items": [
+        {
+          "skuId": "00000000-0000-4000-8000-000000000801",
+          "skuPartNumber": "SPE_E3",
+          "status": "Enabled",
+          "isTrial": false,
+          "createdDateTime": "2025-01-15T00:00:00Z",
+          "nextLifecycleDateTime": "2026-11-15T00:00:00Z",
+          "totalLicenses": 25,
+          "servicePlans": [
+            "AAD_PREMIUM",
+            "EXCHANGE_S_ENTERPRISE",
+            "INTUNE_A"
+          ]
+        },
+        {
+          "skuId": "00000000-0000-4000-8000-000000000802",
+          "skuPartNumber": "AAD_PREMIUM_P2",
+          "status": "Enabled",
+          "isTrial": true,
+          "createdDateTime": "2026-10-14T00:00:00Z",
+          "nextLifecycleDateTime": "2026-11-13T00:00:00Z",
+          "totalLicenses": 100,
+          "servicePlans": [
+            "AAD_PREMIUM",
+            "AAD_PREMIUM_P2"
+          ]
+        },
+        {
+          "skuId": "00000000-0000-4000-8000-000000000803",
+          "skuPartNumber": "POWER_BI_PRO",
+          "status": "Enabled",
+          "isTrial": true,
+          "createdDateTime": "2026-10-06T00:00:00Z",
+          "nextLifecycleDateTime": "2026-11-05T00:00:00Z",
+          "totalLicenses": 25,
+          "servicePlans": [
+            "BI_AZURE_P2"
+          ]
         }
       ]
     },

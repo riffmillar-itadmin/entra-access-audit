@@ -31,6 +31,7 @@
     assignment schedules and activation settings need P2. The directory audit
     log needs no licence, but goes back 7 days without P1 and 30 with it. When the tenant has no licence for them,
     the checks that need them are Skipped, or say what they couldn't see.
+    TEN-07 warns before a P1 or P2 trial ends, while those checks still run.
 
     Writes these files into -OutputPath, named by collection time (UTC):
         entra-access-audit-<time>.html   a self-contained report
@@ -53,6 +54,8 @@
                                        delegated permissions that admins
                                        or users consented to
         GroupMember.Read.All           members of groups that hold a role
+        Organization.Read.All          the tenant's subscriptions: which
+                                       licences it has and when they end
     The Global Reader role is enough to run it. For unattended runs, grant an
     app registration the same permissions as Application permissions and use
     -ClientId, -TenantId and -CertificateThumbprint.
@@ -150,6 +153,12 @@
                        accounts. Fix: TEN-01 called Microsoft's managed
                        consent policies custom. No new scope. Snapshot
                        schema 6.
+    0.7.0  2026-11-24  TEN-07 Entra ID P1 or P2 ending: warns before a trial
+                       that is the only source of P1 or P2 ends, and fails
+                       on one that has expired or been suspended, naming
+                       the checks that will then be Skipped. New scope
+                       Organization.Read.All, to read the subscriptions.
+                       Snapshot schema 7.
 #>
 
 [CmdletBinding()]
@@ -166,8 +175,8 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.6.0'
-$SnapshotSchemaVersion = 6
+$EntraAccessAuditVersion = '0.7.0'
+$SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.
 $AuditScopes = @(
@@ -178,6 +187,7 @@ $AuditScopes = @(
     'Policy.Read.All'
     'DelegatedPermissionGrant.Read.All'
     'GroupMember.Read.All'
+    'Organization.Read.All'
 )
 
 # Microsoft Graph's own service principal, whose app roles are the Graph
@@ -208,6 +218,15 @@ $LaterDatasets = [ordered]@{
     AuthMethodsPolicy   = 5
     CrossTenantAccess   = 5
     CaGroups            = 6
+    Subscriptions       = 7
+}
+
+# The service plans that carry Microsoft Entra ID P1 and P2, and the datasets
+# that need each. A P2 subscription includes the P1 plan too. TEN-07 names the
+# checks that need these datasets when the plan is about to go.
+$PremiumPlans = [ordered]@{
+    AAD_PREMIUM    = @{ Name = 'Microsoft Entra ID P1'; Datasets = @('SignIns', 'Registration', 'ConditionalAccess', 'CaGroups') }
+    AAD_PREMIUM_P2 = @{ Name = 'Microsoft Entra ID P2'; Datasets = @('RoleAssignmentSchedules', 'RoleEligibility', 'RolePolicies') }
 }
 
 # The PIM policy rules ROLE-10 reads: what activation needs, and how long it
@@ -286,6 +305,7 @@ $DefaultAuditProfile = [ordered]@{
     MinGlobalAdmins        = 2
     MaxGlobalAdmins        = 4
     MaxActivationHours     = 8
+    LicenceExpiryDays      = 30
     BreakGlassAccounts     = @()
     AcceptedApps           = @()
     HighRiskPermissions    = @(
@@ -536,6 +556,7 @@ function Get-TenantSnapshot {
     $datasets.AuthorizationPolicy = Get-AuthorizationPolicy
     $datasets.AuthMethodsPolicy = Get-AuthMethodsPolicy
     $datasets.CrossTenantAccess = Get-CrossTenantAccess
+    $datasets.Subscriptions = Get-Subscription
 
     Write-Host 'Reading Conditional Access and security defaults...'
     $datasets.ConditionalAccess = Read-Dataset -Uri '/v1.0/identity/conditionalAccess/policies' -Needs 'Microsoft Entra ID P1'
@@ -786,6 +807,28 @@ function Get-AuthMethodsPolicy {
                 })
         }
     }
+}
+
+function Get-Subscription {
+    # The tenant's commercial subscriptions, kept to what TEN-07 reads: the
+    # SKU, its state, whether it is a trial, when it next changes state, and
+    # the names of the service plans it carries.
+    $read = Read-Dataset -Uri '/v1.0/directory/subscriptions'
+    if ($read.Status -ne 'Collected') { return $read }
+    $items = @(foreach ($s in $read.Items) {
+            if ($null -eq $s) { continue }
+            [ordered]@{
+                skuId                 = Get-Value $s 'skuId'
+                skuPartNumber         = Get-Value $s 'skuPartNumber'
+                status                = Get-Value $s 'status'
+                isTrial               = Get-Value $s 'isTrial'
+                createdDateTime       = Get-Value $s 'createdDateTime'
+                nextLifecycleDateTime = Get-Value $s 'nextLifecycleDateTime'
+                totalLicenses         = Get-Value $s 'totalLicenses'
+                servicePlans          = @(Get-Value $s 'serviceStatus' | ForEach-Object { Get-Value $_ 'servicePlanName' } | Where-Object { $_ })
+            }
+        })
+    return (New-Dataset -Status 'Collected' -Items $items)
 }
 
 function Get-CrossTenantAccess {
@@ -2329,6 +2372,67 @@ $AuditChecks = @(
             if ($warn.Count) { return (New-Outcome Warn "$($warn.Count) thing(s) to review about the break-glass accounts.$note" $warn.ToArray()) }
             $tested = if ($signIns) { " and signed in within $BreakGlassTestDays days" } else { '' }
             return (New-Outcome Pass "All $($listed.Count) break-glass accounts exist, are enabled and cloud-only, hold Global Administrator, are outside every enforced Conditional Access policy$tested.$note")
+        }
+    }
+    [pscustomobject]@{
+        Id = 'TEN-07'; Area = 'Tenant settings'; Severity = 'Medium'
+        Title = 'Entra ID P1 or P2 ending'
+        Needs = @('Subscriptions')
+        Test = {
+            param($Context)
+            $days = $Context.Profile.LicenceExpiryDays
+            $cutoff = $Context.Now.AddDays($days)
+            $subs = @(Get-Value $Context.Snapshot 'Datasets', 'Subscriptions', 'Items' | Where-Object { $null -ne $_ -and "$(Get-Value $_ 'status')" -ne 'Deleted' })
+            # Plans the tenant has, and those no lasting subscription carries.
+            # A plan lasts if an enabled subscription that isn't a trial
+            # ending within the window carries it. A paid subscription's next
+            # lifecycle date is usually just its renewal, so only a trial's
+            # date counts.
+            $held = [Collections.Generic.List[string]]::new()
+            $lost = [Collections.Generic.List[string]]::new()
+            foreach ($plan in $PremiumPlans.Keys) {
+                $sources = @($subs | Where-Object { @(Get-Value $_ 'servicePlans') -contains $plan })
+                if ($sources.Count -eq 0) { continue }
+                $held.Add($PremiumPlans[$plan].Name)
+                $lasting = @($sources | Where-Object {
+                        $end = ConvertTo-UtcDate (Get-Value $_ 'nextLifecycleDateTime')
+                        "$(Get-Value $_ 'status')" -eq 'Enabled' -and -not ((Get-Value $_ 'isTrial') -eq $true -and $null -ne $end -and $end -le $cutoff)
+                    })
+                if ($lasting.Count -eq 0) { $lost.Add($plan) }
+            }
+            $fail = [Collections.Generic.List[object]]::new()
+            $warn = [Collections.Generic.List[object]]::new()
+            foreach ($s in $subs) {
+                $plans = @($lost | Where-Object { @(Get-Value $s 'servicePlans') -contains $_ })
+                if ($plans.Count -eq 0) { continue }
+                $names = @($plans | ForEach-Object { $PremiumPlans[$_].Name }) -join ' and '
+                $datasets = @($plans | ForEach-Object { $PremiumPlans[$_].Datasets })
+                $needing = @($AuditChecks | Where-Object { @($_.Needs | Where-Object { $datasets -contains $_ }).Count } | ForEach-Object Id)
+                $it = if ($plans.Count -gt 1) { 'them' } else { 'it' }
+                $then = if ($needing.Count) { " Without $it, these checks are Skipped: $($needing -join ', ')." } else { '' }
+                $sku = "$(Get-Value $s 'skuPartNumber')"
+                $state = "$(Get-Value $s 'status')"
+                $trial = (Get-Value $s 'isTrial') -eq $true
+                $end = ConvertTo-UtcDate (Get-Value $s 'nextLifecycleDateTime')
+                $subject = if ($trial) { "$sku (trial)" } else { $sku }
+                if ($state -eq 'Warning') {
+                    $until = if ($end) { " until $(Format-AuditDate $end)" } else { '' }
+                    $fail.Add((New-Finding $subject "Carries $names. Expired, and in its grace period$until; renew it before then.$then"))
+                } elseif ($state -in 'Suspended', 'LockedOut') {
+                    $fail.Add((New-Finding $subject "Carries $names. $state, so what it carries is already off.$then"))
+                } elseif ($state -eq 'Enabled' -and $trial -and $null -ne $end) {
+                    $left = [int][math]::Ceiling(($end - $Context.Now).TotalDays)
+                    $when = if ($left -gt 0) { "ends $(Format-AuditDate $end), in $left day(s)" } else { "ended $(Format-AuditDate $end)" }
+                    $warn.Add((New-Finding $subject "Carries $names. The trial $when, and no other subscription carries it.$then"))
+                } else {
+                    $fail.Add((New-Finding $subject "Carries $names. State '$state', and no other subscription carries it.$then"))
+                }
+            }
+            if ($fail.Count) { return (New-Outcome Fail "$($fail.Count) subscription(s) carrying Entra ID P1 or P2 have expired or been suspended." @($fail.ToArray() + $warn.ToArray())) }
+            if ($warn.Count) { return (New-Outcome Warn "$($warn.Count) trial(s) carrying Entra ID P1 or P2 end within $days days, and nothing else carries them." $warn.ToArray()) }
+            if ($held.Count -eq 0) { return (New-Outcome Pass 'No subscription carries Microsoft Entra ID P1 or P2, so the checks that need them are Skipped. Nothing is ending.') }
+            $verb = if ($held.Count -gt 1) { 'come' } else { 'comes' }
+            return (New-Outcome Pass "$($held -join ' and ') $verb from a subscription that isn't a trial ending within $days days.")
         }
     }
 )

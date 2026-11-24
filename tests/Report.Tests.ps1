@@ -156,7 +156,7 @@ Describe 'The script, run on the Westmark fixture' {
         $log = & $Exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -FromSnapshot $FixturePath -ProfilePath $ProfileFixture -OutputPath $out *>&1
         $LASTEXITCODE | Should -Be 1 -Because ($log -join "`n")
         @(Get-ChildItem -LiteralPath $out -File).Count | Should -Be 3
-        ($log -join "`n") | Should -Match 'Fail 20  Warn 19  Pass 4  Skipped 0  Error 0'
+        ($log -join "`n") | Should -Match 'Fail 20  Warn 20  Pass 4  Skipped 0  Error 0'
     }
 
     It 'exits 2 when it cannot start' {
