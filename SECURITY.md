@@ -9,8 +9,8 @@ Fixes go into the latest release only.
 Nothing. The audit is read-only. Every request it sends to Microsoft Graph is a
 GET, through one function, and it asks only for read scopes:
 `User.Read.All`, `AuditLog.Read.All`, `RoleManagement.Read.Directory`,
-`Application.Read.All`, `Policy.Read.All`, `DelegatedPermissionGrant.Read.All`
-and `GroupMember.Read.All`.
+`Application.Read.All`, `Policy.Read.All`, `DelegatedPermissionGrant.Read.All`,
+`GroupMember.Read.All` and `Organization.Read.All`.
 
 It writes only its own report files, and a snapshot when `-SnapshotPath` is
 given. Both name real accounts, guests and apps, so keep them somewhere private.

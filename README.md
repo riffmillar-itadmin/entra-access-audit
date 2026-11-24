@@ -28,7 +28,8 @@ and how. It reads the tenant through Microsoft Graph and reports on seven areas:
 - **Tenant settings:** whether users can consent to apps, register apps or
   create tenants, what guests can see and who can invite them, whether text
   message and voice call are allowed for sign-in, cross-tenant defaults open
-  to every organization, and whether the break-glass accounts would work.
+  to every organization, whether the break-glass accounts would work, and
+  whether a P1 or P2 trial is about to end.
 
 It writes an HTML report, a CSV with one row per finding, and a JSON file. It
 runs on Windows PowerShell 5.1 and PowerShell 7, needs only the
@@ -82,6 +83,7 @@ writes only its report files, and a snapshot when you ask for one.
 | `Policy.Read.All` | Conditional Access policies, security defaults, the authorization policy (user consent, default user permissions, guest settings), the authentication methods policy and the default cross-tenant access settings |
 | `DelegatedPermissionGrant.Read.All` | Delegated permissions that admins or users consented to for apps |
 | `GroupMember.Read.All` | Members and owners of the groups that hold a directory role, and of the groups Conditional Access policies include or exclude |
+| `Organization.Read.All` | The tenant's subscriptions: each one's product, state, whether it is a trial, when it next changes state, and the service plans it carries |
 
 `Application.Read.All` also reads the owners of the enterprise apps that hold a
 Microsoft Graph permission or a role. For PIM's activation settings Microsoft
@@ -111,7 +113,10 @@ The directory audit log needs no licence, but Microsoft keeps it for 7 days
 without P1 and 30 days with it, so ROLE-09 and ROLE-12 see only that far back and say so.
 
 When the tenant hasn't got the licence, those checks are **Skipped**, and the
-report says why. Two cases are different:
+report says why. TEN-07 warns before that happens: when a trial is the only
+subscription carrying P1 or P2 and ends within `LicenceExpiryDays` (30), it
+names the checks that will then be Skipped. It fails when that subscription has
+expired or been suspended. Two cases are different:
 
 - Without PIM (P2), ROLE-01 counts active Global Administrators only, and
   ROLE-02 and ROLE-07 count every active assignment as permanent. Each says
@@ -167,6 +172,7 @@ report says why. Two cases are different:
 | TEN-04 | Tenant settings | Medium | Text message and voice call sign-in methods | Warn for each enabled in the authentication methods policy, and notes when the legacy MFA and SSPR settings still apply. |
 | TEN-05 | Tenant settings | Low | Cross-tenant access defaults | Warn when the defaults allow B2B direct connect, or redeem invitations automatically, for every other organization. |
 | TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, not an active Global Administrator, or reached by an enforced Conditional Access policy. Warn when one hasn't signed in within 90 days, when it can't be told whether a policy reaches one, and when none or only one is listed. |
+| TEN-07 | Tenant settings | Medium | Entra ID P1 or P2 ending | Warn when the only subscriptions carrying P1 or P2 are trials ending within `LicenceExpiryDays` (30), naming the checks that will be Skipped. Fail when they have expired (grace period) or been suspended. A paid subscription's renewal date doesn't count. |
 
 Privileged roles are Global Administrator and the other built-in roles that
 can take over the tenant or its security, such as Privileged Role
@@ -218,6 +224,7 @@ there, or the file named by `-ProfilePath`. The example documents each setting:
 | `MaxSecretLifetimeDays` | 365 | APP-03 |
 | `MinGlobalAdmins`, `MaxGlobalAdmins` | 2, 4 | ROLE-01 |
 | `MaxActivationHours` | 8 | ROLE-10 |
+| `LicenceExpiryDays` | 30 | TEN-07 |
 | `BreakGlassAccounts` | none | ROLE-02, ROLE-07, ROLE-08, ROLE-11, ROLE-12, SVC-05, STALE-01, STALE-02, CA-05 leave them out; TEN-06 checks them |
 | `AcceptedApps` | none | APP-04, APP-06, APP-07, SVC-01 to SVC-03 and SVC-05 count them but don't list them |
 | `HighRiskPermissions` | 16 permissions | APP-04, APP-06, APP-07, SVC-03, SVC-05 |
@@ -318,6 +325,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.7.0 | 2026-11-24 | Now with 44 checks. TEN-07 Entra ID P1 or P2 ending: warns before a trial that is the only source of P1 or P2 ends, so a lab or pilot tenant doesn't find out from a report full of Skipped checks, and fails on one that has expired or been suspended. New `LicenceExpiryDays` setting. New scope `Organization.Read.All`, to read the subscriptions; Global Reader still covers it. Snapshot schema 7; on older snapshots TEN-07 is Skipped. |
 | 0.6.0 | 2026-11-23 | Now with 43 checks, from testing two break-glass accounts in a lab tenant. TEN-06 fails a break-glass account that an enforced Conditional Access policy reaches, and warns when one hasn't signed in within 90 days. CA-05 names who an excluded group lets through, and flags a group that isn't role-assignable or has owners, or no longer exists. ROLE-13 privileged roles held by personal or external accounts, such as the personal account that created the tenant. Fix: TEN-01 warned that Microsoft's managed consent policies, the default in a new tenant, were custom. No new scope: the groups are read with `GroupMember.Read.All`, and identities with `User.Read.All`. Snapshot schema 6; on older snapshots, TEN-06 and CA-05 say when a group's members weren't collected, and ROLE-13 reads `#EXT#` in the name. |
 | 0.5.1 | 2026-11-16 | The test and lint scripts' summary uses the same layout as the JobSweep and endpoint scan suites: one banner line with the script name, status and counts, the target, run time and PowerShell version on their own lines, and a RESULT bar. The table keeps its Suite and Fixtures columns, and shows Notes only when a row has something to explain. Tests for the summary block added. |
 | 0.5.0 | 2026-11-16 | Now with 42 checks. New Tenant settings area: TEN-01 user consent to apps, TEN-02 users who can register apps or create tenants, TEN-03 guest access and invitations, TEN-04 text message and voice call sign-in, TEN-05 cross-tenant defaults, TEN-06 break-glass accounts that would fail in an emergency. ROLE-12 privileged roles assigned outside PIM. Fix: ROLE-09 listed a self-grant made outside PIM twice, because PIM logs it a second time. No new scope: the settings are read with `Policy.Read.All`. Snapshot schema 5; on older snapshots TEN-01 to TEN-05 are Skipped. |
