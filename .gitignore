@@ -23,6 +23,9 @@ EntraAccessAudit.local*.psd1
 *.pbix
 *.pbit
 
+#  The module tools/Build-Module.ps1 builds for the PowerShell Gallery.
+out/
+
 # ---- editor and OS scratch ----
 *.bak
 *.tmp

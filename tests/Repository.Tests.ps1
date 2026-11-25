@@ -38,6 +38,16 @@ Describe 'README check table' {
     }
 }
 
+Describe 'Permissions' {
+    It 'names every scope, and gives their number for unattended runs' {
+        # Regression: Unattended runs said seven after 0.7.0 added the eighth.
+        $text = $Readme -join "`n"
+        foreach ($scope in $AuditScopes) { $text | Should -Match ([regex]::Escape("| ``$scope`` |")) -Because $scope }
+        $words = @('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve')
+        $text | Should -Match "grant it the $($words[$AuditScopes.Count]) permissions above"
+    }
+}
+
 Describe 'Thresholds table' {
     It 'names every setting the script knows' {
         $text = $Readme -join "`n"

@@ -37,6 +37,10 @@ runs on Windows PowerShell 5.1 and PowerShell 7, needs only the
 
 ## Getting started
 
+From 1.0.0 the audit is also on the PowerShell Gallery as the
+`EntraAccessAudit` module; see [The module](#the-module). From this
+repository:
+
 1. Install the Graph authentication module, once:
 
    ```powershell
@@ -198,10 +202,29 @@ Membership that PIM for Groups makes eligible isn't read yet.
 .\Invoke-EntraAccessAudit.ps1 -OutputPath D:\Audits -ProfilePath .\EntraAccessAudit.local.psd1
 ```
 
+### The module
+
+The `EntraAccessAudit` module holds the same script, with one command,
+`Invoke-EntraAccessAudit`, that takes the same parameters and has the same
+help. It sets `$LASTEXITCODE` to the script's exit code. From 1.0.0 it is on
+the PowerShell Gallery:
+
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+Install-Module EntraAccessAudit -Scope CurrentUser
+Invoke-EntraAccessAudit -OutputPath D:\Audits -ProfilePath D:\Audits\EntraAccessAudit.local.psd1
+```
+
+The module doesn't install `Microsoft.Graph.Authentication` itself, because
+evaluating a snapshot needs no Graph module. Each update replaces the module's
+folder, so keep your thresholds file somewhere else and name it with
+`-ProfilePath`; the example is in the module's folder, at
+`(Get-Module EntraAccessAudit -ListAvailable)[0].ModuleBase`.
+
 ### Unattended runs
 
 For a scheduled audit, sign in as an app instead of a person. Register an app
-in the tenant, grant it the seven permissions above as **Application**
+in the tenant, grant it the eight permissions above as **Application**
 permissions with admin consent, add a certificate to it, and run:
 
 ```powershell
@@ -361,6 +384,23 @@ Pester 6.2.0 and PSScriptAnalyzer 1.25.0 are pinned, and installed for the
 current user if missing: from the PowerShell Gallery, then from a second
 download site checked against a pinned SHA-256, then from `-PackagePath`.
 
+### Publishing the module
+
+`tools/Build-Module.ps1` builds the Gallery module in `out\EntraAccessAudit`.
+It takes the version from the script, the author from `LICENSE` and the
+release notes from this changelog, and stops if any is missing.
+
+```powershell
+.\tools\Build-Module.ps1
+Publish-PSResource -Path .\out\EntraAccessAudit\EntraAccessAudit.psd1 -Repository PSGallery -ApiKey $key
+```
+
+Give `Publish-PSResource` the manifest file, not the folder: given the
+folder, it reads `EntraAccessAudit.example.psd1`, the first `.psd1` by name,
+and stops with "No author was provided". The tests build the module, import it
+and run an audit through it on both editions, and the lint script lints the
+built module too.
+
 ## How this is built
 
 I build this tool with Claude Code as a pair programmer, under the rules in
@@ -376,6 +416,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.9.0 | 2026-11-25 | The audit is also a PowerShell module, `EntraAccessAudit`, built by `tools/Build-Module.ps1` for the PowerShell Gallery (published from 1.0.0): `Invoke-EntraAccessAudit` runs the same script with the same parameters and help, and sets `$LASTEXITCODE`. The tests build and import it on both editions, and lint checks the built module. README: The module, Publishing the module. Fix: Unattended runs said to grant seven permissions; there are eight since 0.7.0. |
 | 0.8.0 | 2026-11-24 | Power BI template. `EntraAccessAudit.pbit` on the Release, built from the Power BI project in `powerbi/`, reads every JSON report in a folder: an Overview of each tenant's latest run, Trends across runs with a grid of every check by run, and every Finding with the data that wasn't collected. No account needed. The JSON report now names the tenant. README screenshots of the HTML report and the template, from the fictional Westmark tenant. Fix: SVC-03 failed Microsoft Graph Command Line Tools as another organization's app when its service principal showed an owner tenant the audit didn't know; Microsoft's documented app IDs for it and Graph Explorer now count as Microsoft's. |
 | 0.7.0 | 2026-11-24 | Now with 44 checks. TEN-07 Entra ID P1 or P2 ending: warns before a trial that is the only source of P1 or P2 ends, so a lab or pilot tenant doesn't find out from a report full of Skipped checks, and fails on one that has expired or been suspended. New `LicenceExpiryDays` setting. New scope `Organization.Read.All`, to read the subscriptions; Global Reader still covers it. Snapshot schema 7; on older snapshots TEN-07 is Skipped. |
 | 0.6.0 | 2026-11-23 | Now with 43 checks, from testing two break-glass accounts in a lab tenant. TEN-06 fails a break-glass account that an enforced Conditional Access policy reaches, and warns when one hasn't signed in within 90 days. CA-05 names who an excluded group lets through, and flags a group that isn't role-assignable or has owners, or no longer exists. ROLE-13 privileged roles held by personal or external accounts, such as the personal account that created the tenant. Fix: TEN-01 warned that Microsoft's managed consent policies, the default in a new tenant, were custom. No new scope: the groups are read with `GroupMember.Read.All`, and identities with `User.Read.All`. Snapshot schema 6; on older snapshots, TEN-06 and CA-05 say when a group's members weren't collected, and ROLE-13 reads `#EXT#` in the name. |

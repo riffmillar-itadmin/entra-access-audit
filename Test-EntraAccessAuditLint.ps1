@@ -4,8 +4,9 @@
     with a summary table.
 
 .DESCRIPTION
-    Runs PSScriptAnalyzer over every script in the repository with
-    PSScriptAnalyzerSettings.psd1. Errors, warnings and parse errors fail (exit
+    Runs PSScriptAnalyzer over every script in the repository, and over the
+    module tools/Build-Module.ps1 builds (in a temporary folder, its findings
+    named module/<file>), with PSScriptAnalyzerSettings.psd1. Errors, warnings and parse errors fail (exit
     1); Information findings are reported but do not. Finding no PowerShell
     files to lint fails too, since that would be a silent pass.
 
@@ -54,7 +55,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $version = '1.25.0'
-$target = "Every .ps1, .psm1 and .psd1 in the repository, with PSScriptAnalyzer $version and PSScriptAnalyzerSettings.psd1"
+$target = "Every .ps1, .psm1 and .psd1 in the repository and the built module, with PSScriptAnalyzer $version and PSScriptAnalyzerSettings.psd1"
 . (Join-Path $PSScriptRoot 'tools/Write-TestSummary.ps1')
 
 function Get-LintRow {
@@ -113,16 +114,32 @@ try {
 
     $settings = Join-Path $PSScriptRoot 'PSScriptAnalyzerSettings.psd1'
     $findings = @(Invoke-ScriptAnalyzer -Path $PSScriptRoot -Recurse -Settings $settings)
+    # The Gallery module too, since its command is generated: built in a
+    # temporary folder, and its findings named module/<file>.
+    $moduleOut = Join-Path ([IO.Path]::GetTempPath()) "eaa-lint-module-$([guid]::NewGuid().ToString('N'))"
+    $moduleRoot = $null
+    try {
+        $built = & (Join-Path $PSScriptRoot 'tools/Build-Module.ps1') -OutputPath $moduleOut 6>$null
+        $moduleRoot = @($built)[-1].FullName
+        $findings += @(Invoke-ScriptAnalyzer -Path $moduleRoot -Recurse -Settings $settings)
+        $moduleFiles = @(Get-ChildItem -LiteralPath $moduleRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' })
+    } finally {
+        if (Test-Path -LiteralPath $moduleOut) { Remove-Item -LiteralPath $moduleOut -Recurse -Force }
+    }
     # Filtered by extension rather than -Include, which Windows PowerShell 5.1
     # ignores with -LiteralPath and so counted every file.
-    $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' })
+    $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.psd1' }) + $moduleFiles
     $inActions = $env:GITHUB_ACTIONS -eq 'true'
 
     Push-Location $PSScriptRoot
     try {
         foreach ($f in $findings) {
             # repo-relative with forward slashes, so GitHub links the annotation to the file
-            $file = (Resolve-Path -Relative $f.ScriptPath) -replace '^\.[\\/]', '' -replace '\\', '/'
+            if ($moduleRoot -and $f.ScriptPath.StartsWith($moduleRoot)) {
+                $file = 'module/' + ($f.ScriptPath.Substring($moduleRoot.Length).TrimStart('\', '/') -replace '\\', '/')
+            } else {
+                $file = (Resolve-Path -Relative $f.ScriptPath) -replace '^\.[\\/]', '' -replace '\\', '/'
+            }
             if ($inActions) {
                 $level = if ("$($f.Severity)" -eq 'Information') { 'notice' } else { 'error' }
                 Write-Output "::$level file=$file,line=$($f.Line)::[$($f.RuleName)] $($f.Message)"
