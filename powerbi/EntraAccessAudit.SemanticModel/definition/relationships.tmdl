@@ -1,0 +1,12 @@
+relationship 84d6a28d-cb74-5252-a3b5-3d7729bb0b15
+	fromColumn: Results.RunKey
+	toColumn: Runs.RunKey
+
+relationship f370fbdd-8183-54ef-930b-e05bb52bc49b
+	fromColumn: Findings.ResultKey
+	toColumn: Results.ResultKey
+
+relationship c484cfd2-d65a-53fa-b07a-92d5c9905a9b
+	fromColumn: Datasets.RunKey
+	toColumn: Runs.RunKey
+

@@ -1,0 +1,54 @@
+/// Folder that holds the audit's JSON reports. Subfolders are read too.
+expression ReportFolder = "\\fileserver\entra-audit" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+	lineageTag: bffe1093-1478-5313-a120-501d68eefed9
+
+	annotation PBI_ResultType = Text
+
+/// A tenant's latest run older than this many days is flagged Stale.
+expression StaleDays = 30 meta [IsParameterQuery=true, Type="Number", IsParameterQueryRequired=true]
+	lineageTag: 1b2ef6d5-3560-5768-bce2-02309a0438da
+
+	annotation PBI_ResultType = Number
+
+/// Days of runs the Trends page shows, counting back from the refresh.
+expression TrendDays = 180 meta [IsParameterQuery=true, Type="Number", IsParameterQueryRequired=true]
+	lineageTag: 6db62777-0f42-5bbc-8d6d-ead4dd4a9640
+
+	annotation PBI_ResultType = Number
+
+/// Every audit report in ReportFolder, one row per run. Not loaded: Runs,
+/// Results, Findings and Datasets are built from it.
+expression Reports =
+		let
+		    // The shipped example share doesn't exist. With it, the model loads
+		    // empty, so Desktop can export the template; any other folder that
+		    // can't be read, or holds no reports, stops the refresh with a reason.
+		    Example = "\\fileserver\entra-audit",
+		    Readable = not (try Table.RowCount(Folder.Files(ReportFolder)))[HasError],
+		    Files = if Readable then Folder.Files(ReportFolder)
+		        else if ReportFolder = Example then #table(type table [Name = text, Content = binary], {})
+		        else error Error.Record("Folder not found", "Can't read the ReportFolder " & ReportFolder & ". Change the ReportFolder parameter."),
+		    Named = Table.SelectRows(Files, each
+		        Text.StartsWith(Text.Lower([Name]), "entra-access-audit-")
+		        and Text.EndsWith(Text.Lower([Name]), ".json")
+		        and not Text.EndsWith(Text.Lower([Name]), ".snapshot.json")),
+		    Parsed = Table.AddColumn(Named, "Doc", each try Json.Document([Content]) otherwise null),
+		    // A snapshot or any other JSON file has no Tool field.
+		    Audit = Table.SelectRows(Parsed, each [Doc] is record and Record.FieldOrDefault([Doc], "Tool", null) = "entra-access-audit"),
+		    Checked = if Table.IsEmpty(Audit) and ReportFolder <> Example
+		        then error Error.Record("No audit reports", "No entra-access-audit JSON reports in " & ReportFolder & ". Change the ReportFolder parameter.")
+		        else Audit,
+		    Keyed = Table.AddColumn(Table.SelectColumns(Checked, {"Name", "Doc"}), "Tenant", each
+		        let t = Record.FieldOrDefault([Doc], "TenantId", null) in if t = null or t = "" then "(not recorded)" else Text.From(t), type text),
+		    Timed = Table.AddColumn(Keyed, "CollectedUtc", each
+		        DateTimeZone.RemoveZone(DateTimeZone.ToUtc(DateTimeZone.From([Doc][CollectedAt]))), type datetime),
+		    Run = Table.AddColumn(Timed, "RunKey", each [Tenant] & "|" & DateTime.ToText([CollectedUtc], "yyyy-MM-ddTHH:mm:ss"), type text),
+		    // The same run can be in the folder twice, for example copied
+		    // into a subfolder. Keep one.
+		    Distinct = Table.Distinct(Run, {"RunKey"})
+		in
+		    Distinct
+	lineageTag: b1aca318-c27f-5e76-b95e-cf63603025d3
+
+	annotation PBI_ResultType = Table
+

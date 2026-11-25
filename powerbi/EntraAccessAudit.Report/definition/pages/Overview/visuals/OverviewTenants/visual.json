@@ -1,0 +1,248 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.4.0/schema.json",
+  "name": "OverviewTenants",
+  "position": {
+    "x": 16,
+    "y": 192,
+    "width": 1248,
+    "height": 150,
+    "z": 6000,
+    "tabOrder": 6000
+  },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "TenantId"
+                }
+              },
+              "queryRef": "Runs.TenantId",
+              "nativeQueryRef": "Tenant",
+              "displayName": "Tenant"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "CollectedUtc"
+                }
+              },
+              "queryRef": "Runs.CollectedUtc",
+              "nativeQueryRef": "Collected (UTC)",
+              "displayName": "Collected (UTC)"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "AgeDays"
+                }
+              },
+              "queryRef": "Runs.AgeDays",
+              "nativeQueryRef": "Age (days)",
+              "displayName": "Age (days)"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "ToolVersion"
+                }
+              },
+              "queryRef": "Runs.ToolVersion",
+              "nativeQueryRef": "Version",
+              "displayName": "Version"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Fail"
+                }
+              },
+              "queryRef": "Runs.Fail",
+              "nativeQueryRef": "Fail"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Warn"
+                }
+              },
+              "queryRef": "Runs.Warn",
+              "nativeQueryRef": "Warn"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Pass"
+                }
+              },
+              "queryRef": "Runs.Pass",
+              "nativeQueryRef": "Pass"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Skipped"
+                }
+              },
+              "queryRef": "Runs.Skipped",
+              "nativeQueryRef": "Skipped"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Error"
+                }
+              },
+              "queryRef": "Runs.Error",
+              "nativeQueryRef": "Error"
+            },
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Runs"
+                    }
+                  },
+                  "Property": "Flags"
+                }
+              },
+              "queryRef": "Runs.Flags",
+              "nativeQueryRef": "Flags"
+            }
+          ]
+        }
+      },
+      "sortDefinition": {
+        "sort": [
+          {
+            "field": {
+              "Column": {
+                "Expression": {
+                  "SourceRef": {
+                    "Entity": "Runs"
+                  }
+                },
+                "Property": "Fail"
+              }
+            },
+            "direction": "Descending"
+          }
+        ]
+      }
+    },
+    "drillFilterOtherVisuals": true,
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "11D"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "columnHeaders": [
+        {
+          "properties": {
+            "fontSize": {
+              "expr": {
+                "Literal": {
+                  "Value": "11D"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "total": [
+        {
+          "properties": {
+            "totals": {
+              "expr": {
+                "Literal": {
+                  "Value": "false"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "visualContainerObjects": {
+      "title": [
+        {
+          "properties": {
+            "show": {
+              "expr": {
+                "Literal": {
+                  "Value": "true"
+                }
+              }
+            },
+            "text": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Tenants'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

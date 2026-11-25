@@ -272,9 +272,60 @@ Each run writes three files, named by collection time (UTC):
 | --- | --- |
 | `entra-access-audit-<time>.html` | A self-contained page: counts, every check by area with its findings, the data collected and the thresholds. No scripts, light and dark themes. |
 | `entra-access-audit-<time>.csv` | One row per finding, with the check, its result and severity. A check with no findings has one row. |
-| `entra-access-audit-<time>.json` | Counts, each dataset's status, the thresholds and every result. |
+| `entra-access-audit-<time>.json` | The tenant ID, counts, each dataset's status, the thresholds and every result. The Power BI template reads these. |
+
+![The HTML report for the fictional Westmark tenant](docs/images/report-overview.png)
 
 The reports name real accounts, guests and apps. Keep them somewhere private.
+
+### Power BI
+
+Keep the JSON reports from each run in one folder, for one tenant or several.
+The Power BI template reads every `entra-access-audit-*.json` report in it,
+subfolders included, and needs nothing else: no snapshot, no Graph access and
+no account. [Power BI Desktop](https://powerbi.microsoft.com/desktop/) is free
+and works without signing in.
+
+Download `EntraAccessAudit.pbit` from the [latest release](../../releases/latest)
+and open it. Power BI asks for three parameters. The boxes start empty, so
+fill in all three:
+
+| Parameter | Suggested value | What it does |
+| --- | --- | --- |
+| `ReportFolder` | your folder, such as `\\fileserver\entra-audit` | The folder that holds the JSON reports. |
+| `StaleDays` | 30 | A tenant's latest run older than this is flagged Stale. |
+| `TrendDays` | 180 | Days of runs the Trends page shows. |
+
+The template ships without parameter values, so it can't fill these in. To
+change them later, choose Transform data, then Edit parameters. If `ReportFolder`
+is left at the example `\\fileserver\entra-audit`, the pages load empty. Any
+other folder that can't be read, or that holds no reports, stops the refresh
+with a message that says so.
+
+The template has three pages:
+
+- **Overview.** Each tenant's latest run: Fail, Warn, Skipped and Error totals,
+  a row per tenant with its counts, age, version and flags (Stale, Errors,
+  datasets not collected), checks by area, and the checks to act on, worst
+  severity first.
+- **Trends.** Pick a tenant. Fail, Warn, Skipped and Error for each run in the
+  trend window, and a grid of every check by run (F Fail, W Warn, P Pass, S
+  Skipped, E Error). A new release adds checks, and a lapsed licence turns
+  checks Skipped, so counts from such runs don't compare one for one; the grid
+  shows which checks changed.
+- **Findings.** Every finding in the latest runs, with Area, Severity and Result
+  slicers, and below it the data each run couldn't collect and why.
+
+![Power BI template: the Overview page for the fictional Westmark tenant](docs/images/powerbi-overview.png)
+
+Like the audit's own reports, the template shows counts and results, never a
+score. Refresh after new runs. The template keeps no data, but a `.pbix` saved
+from it does, and it names real accounts and apps, so treat that file like the
+reports. Reports from before 0.8.0 have no tenant ID; they show as one tenant,
+"(not recorded)".
+
+The template's source is the Power BI project in [powerbi/](powerbi/), plain text
+that Power BI Desktop opens directly (`EntraAccessAudit.pbip`).
 
 ## Compatibility
 
@@ -325,6 +376,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 0.8.0 | 2026-11-24 | Power BI template. `EntraAccessAudit.pbit` on the Release, built from the Power BI project in `powerbi/`, reads every JSON report in a folder: an Overview of each tenant's latest run, Trends across runs with a grid of every check by run, and every Finding with the data that wasn't collected. No account needed. The JSON report now names the tenant. README screenshots of the HTML report and the template, from the fictional Westmark tenant. Fix: SVC-03 failed Microsoft Graph Command Line Tools as another organization's app when its service principal showed an owner tenant the audit didn't know; Microsoft's documented app IDs for it and Graph Explorer now count as Microsoft's. |
 | 0.7.0 | 2026-11-24 | Now with 44 checks. TEN-07 Entra ID P1 or P2 ending: warns before a trial that is the only source of P1 or P2 ends, so a lab or pilot tenant doesn't find out from a report full of Skipped checks, and fails on one that has expired or been suspended. New `LicenceExpiryDays` setting. New scope `Organization.Read.All`, to read the subscriptions; Global Reader still covers it. Snapshot schema 7; on older snapshots TEN-07 is Skipped. |
 | 0.6.0 | 2026-11-23 | Now with 43 checks, from testing two break-glass accounts in a lab tenant. TEN-06 fails a break-glass account that an enforced Conditional Access policy reaches, and warns when one hasn't signed in within 90 days. CA-05 names who an excluded group lets through, and flags a group that isn't role-assignable or has owners, or no longer exists. ROLE-13 privileged roles held by personal or external accounts, such as the personal account that created the tenant. Fix: TEN-01 warned that Microsoft's managed consent policies, the default in a new tenant, were custom. No new scope: the groups are read with `GroupMember.Read.All`, and identities with `User.Read.All`. Snapshot schema 6; on older snapshots, TEN-06 and CA-05 say when a group's members weren't collected, and ROLE-13 reads `#EXT#` in the name. |
 | 0.5.1 | 2026-11-16 | The test and lint scripts' summary uses the same layout as the JobSweep and endpoint scan suites: one banner line with the script name, status and counts, the target, run time and PowerShell version on their own lines, and a RESULT bar. The table keeps its Suite and Fixtures columns, and shows Notes only when a row has something to explain. Tests for the summary block added. |

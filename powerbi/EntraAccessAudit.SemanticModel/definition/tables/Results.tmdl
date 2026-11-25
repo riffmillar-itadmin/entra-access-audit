@@ -1,0 +1,156 @@
+/// One row per check per run: the check's result and how many findings it had.
+table Results
+	lineageTag: 9733c1c5-4fe8-59f9-91b3-2fcd99f6dd6b
+
+	measure 'Fail checks' = CALCULATE(COUNTROWS(Results), Results[Status] = "Fail") + 0
+		formatString: 0
+		lineageTag: b9ff37f4-348a-58a9-a7da-8915287ef586
+
+	measure 'Warn checks' = CALCULATE(COUNTROWS(Results), Results[Status] = "Warn") + 0
+		formatString: 0
+		lineageTag: c1dce964-4c14-568d-9c92-a98cd491ef8d
+
+	measure 'Pass checks' = CALCULATE(COUNTROWS(Results), Results[Status] = "Pass") + 0
+		formatString: 0
+		lineageTag: 868a2092-cdc8-578d-abb4-03b49e8e5f70
+
+	measure 'Skipped checks' = CALCULATE(COUNTROWS(Results), Results[Status] = "Skipped") + 0
+		formatString: 0
+		lineageTag: d82cd9d6-fe38-5354-bd2e-5ca50a0d5f24
+
+	measure 'Error checks' = CALCULATE(COUNTROWS(Results), Results[Status] = "Error") + 0
+		formatString: 0
+		lineageTag: c728c672-dca2-5f04-b594-36ffe9d19574
+
+	/// F Fail, W Warn, P Pass, S Skipped, E Error. Blank when more than one run is in context.
+	measure 'Status code' = SWITCH(SELECTEDVALUE(Results[Status]), "Fail", "F", "Warn", "W", "Pass", "P", "Skipped", "S", "Error", "E")
+		lineageTag: f8fb4898-093d-5438-8234-f1cb7d103bff
+
+	column ResultKey
+		dataType: string
+		isHidden
+		lineageTag: 55500da2-d428-562f-84e9-fd2028bf9a76
+		summarizeBy: none
+		sourceColumn: ResultKey
+
+		annotation SummarizationSetBy = User
+
+	column RunKey
+		dataType: string
+		isHidden
+		lineageTag: 8211b1e7-2d35-5372-9f33-40732c80f874
+		summarizeBy: none
+		sourceColumn: RunKey
+
+		annotation SummarizationSetBy = User
+
+	column CheckId
+		dataType: string
+		lineageTag: 45395dce-8511-5c61-a335-1c7292b70c08
+		summarizeBy: none
+		sourceColumn: CheckId
+
+		annotation SummarizationSetBy = User
+
+	/// The check ID and title, for grids.
+	column CheckLabel
+		dataType: string
+		lineageTag: c2437196-d354-5b2b-9b41-5a3561783c60
+		summarizeBy: none
+		sourceColumn: CheckLabel
+
+		annotation SummarizationSetBy = User
+
+	column Area
+		dataType: string
+		lineageTag: 550381c9-063c-5f8c-86a7-38bae3045f26
+		summarizeBy: none
+		sourceColumn: Area
+
+		annotation SummarizationSetBy = User
+
+	column Title
+		dataType: string
+		lineageTag: e9adf3fb-a99b-5c50-916d-4febcb71e91a
+		summarizeBy: none
+		sourceColumn: Title
+
+		annotation SummarizationSetBy = User
+
+	column Severity
+		dataType: string
+		lineageTag: 2b94d169-f5bc-5ebb-b718-1d093a8b12f1
+		summarizeBy: none
+		sourceColumn: Severity
+		sortByColumn: SeverityRank
+
+		annotation SummarizationSetBy = User
+
+	column SeverityRank
+		dataType: int64
+		isHidden
+		lineageTag: 831bea9e-d2ff-5937-ac64-ec51cbb667dd
+		summarizeBy: none
+		sourceColumn: SeverityRank
+
+		annotation SummarizationSetBy = User
+
+	column Status
+		dataType: string
+		lineageTag: 21671a19-1bc4-521f-91f4-3f4e64c18b8d
+		summarizeBy: none
+		sourceColumn: Status
+		sortByColumn: StatusRank
+
+		annotation SummarizationSetBy = User
+
+	column StatusRank
+		dataType: int64
+		isHidden
+		lineageTag: b8fc5797-f6e4-548c-8dea-efcb533be034
+		summarizeBy: none
+		sourceColumn: StatusRank
+
+		annotation SummarizationSetBy = User
+
+	column Summary
+		dataType: string
+		lineageTag: 34ec1e78-1100-590f-9df5-73df0e0d284f
+		summarizeBy: none
+		sourceColumn: Summary
+
+		annotation SummarizationSetBy = User
+
+	column FindingCount
+		dataType: int64
+		lineageTag: e0ddbbfb-82cf-5321-9836-78d8e59c43cd
+		summarizeBy: none
+		sourceColumn: FindingCount
+
+		annotation SummarizationSetBy = User
+
+	partition Results = m
+		mode: import
+		source =
+				let
+				    Rows = Table.AddColumn(Reports, "Rows", each let r = Record.FieldOrDefault([Doc], "Results", {}) in if r is list then r else {r}),
+				    Expanded = Table.ExpandListColumn(Table.SelectColumns(Rows, {"RunKey", "Rows"}), "Rows"),
+				    Present = Table.SelectRows(Expanded, each [Rows] is record),
+				    Fields = Table.ExpandRecordColumn(Present, "Rows", {"Id", "Area", "Title", "Severity", "Status", "Summary", "Findings"}),
+				    Count = Table.AddColumn(Fields, "FindingCount", each let f = [Findings] in if f = null then 0 else if f is list then List.Count(f) else 1, Int64.Type),
+				    Renamed = Table.RenameColumns(Table.RemoveColumns(Count, {"Findings"}), {{"Id", "CheckId"}}),
+				    Key = Table.AddColumn(Renamed, "ResultKey", each [RunKey] & "|" & [CheckId], type text),
+				    Label = Table.AddColumn(Key, "CheckLabel", each [CheckId] & " " & [Title], type text),
+				    SeverityRank = Table.AddColumn(Label, "SeverityRank", each
+				        if [Severity] = "High" then 1 else if [Severity] = "Medium" then 2 else if [Severity] = "Low" then 3 else 4, Int64.Type),
+				    StatusRank = Table.AddColumn(SeverityRank, "StatusRank", each
+				        if [Status] = "Fail" then 1 else if [Status] = "Error" then 2 else if [Status] = "Warn" then 3
+				        else if [Status] = "Skipped" then 4 else if [Status] = "Pass" then 5 else 6, Int64.Type),
+				    Typed = Table.TransformColumnTypes(StatusRank, {
+				        {"RunKey", type text}, {"CheckId", type text}, {"Area", type text}, {"Title", type text},
+				        {"Severity", type text}, {"Status", type text}, {"Summary", type text}})
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table
+

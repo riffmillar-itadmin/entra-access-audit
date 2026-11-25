@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.4.0/schema.json",
+  "name": "OverviewFail",
+  "position": {
+    "x": 16,
+    "y": 84,
+    "width": 300,
+    "height": 96,
+    "z": 2000,
+    "tabOrder": 2000
+  },
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Measure": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Results"
+                    }
+                  },
+                  "Property": "Fail checks"
+                }
+              },
+              "queryRef": "Results.Fail checks",
+              "nativeQueryRef": "Fail",
+              "displayName": "Fail"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

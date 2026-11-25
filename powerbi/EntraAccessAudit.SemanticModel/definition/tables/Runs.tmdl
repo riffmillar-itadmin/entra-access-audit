@@ -1,0 +1,198 @@
+/// One row per audit run, by tenant and collection time.
+table Runs
+	lineageTag: fbbf3084-fe95-5691-8f0f-2fb1b6de7764
+
+	measure Tenants = DISTINCTCOUNT(Runs[TenantId])
+		formatString: 0
+		lineageTag: 83421057-de65-5bd5-b66b-6c686bd44847
+
+	measure 'Stale tenants' = CALCULATE(DISTINCTCOUNT(Runs[TenantId]), Runs[IsStale] = TRUE()) + 0
+		formatString: 0
+		lineageTag: b0a307ab-c1a6-523f-87fd-8f8cac9776fb
+
+	column RunKey
+		dataType: string
+		isHidden
+		lineageTag: a14ebba7-0865-5d37-ba9b-3e7c17d971fe
+		summarizeBy: none
+		sourceColumn: RunKey
+
+		annotation SummarizationSetBy = User
+
+	/// The tenant the run audited; "(not recorded)" for reports from before 0.8.0.
+	column TenantId
+		dataType: string
+		lineageTag: 243c35fe-3280-518e-881a-14c022c7b0ea
+		summarizeBy: none
+		sourceColumn: TenantId
+
+		annotation SummarizationSetBy = User
+
+	column CollectedUtc
+		dataType: dateTime
+		formatString: yyyy-mm-dd hh:nn
+		lineageTag: ebc3a8aa-7b27-5a71-bade-65929571fbbf
+		summarizeBy: none
+		sourceColumn: CollectedUtc
+
+		annotation SummarizationSetBy = User
+
+	column ToolVersion
+		dataType: string
+		lineageTag: 47b15247-8224-5bc6-80f0-0cc4ec3b1024
+		summarizeBy: none
+		sourceColumn: ToolVersion
+
+		annotation SummarizationSetBy = User
+
+	column Checks
+		dataType: int64
+		lineageTag: 7de66fdb-ba42-5056-8aa8-3d7200ad6745
+		summarizeBy: none
+		sourceColumn: Checks
+
+		annotation SummarizationSetBy = User
+
+	column Fail
+		dataType: int64
+		lineageTag: a44a626f-c140-54ca-8b5d-c470b0713661
+		summarizeBy: none
+		sourceColumn: Fail
+
+		annotation SummarizationSetBy = User
+
+	column Warn
+		dataType: int64
+		lineageTag: 5b6f19ac-1c82-5eeb-8eda-f62e70b9bd80
+		summarizeBy: none
+		sourceColumn: Warn
+
+		annotation SummarizationSetBy = User
+
+	column Pass
+		dataType: int64
+		lineageTag: e1b4be92-10dd-5a8a-8b4b-cf450b610ea2
+		summarizeBy: none
+		sourceColumn: Pass
+
+		annotation SummarizationSetBy = User
+
+	column Skipped
+		dataType: int64
+		lineageTag: fdd62c7d-3d95-55d7-ac01-7379e29dc396
+		summarizeBy: none
+		sourceColumn: Skipped
+
+		annotation SummarizationSetBy = User
+
+	column Error
+		dataType: int64
+		lineageTag: cec78234-35ac-578f-a45c-98b13738fff9
+		summarizeBy: none
+		sourceColumn: Error
+
+		annotation SummarizationSetBy = User
+
+	/// Datasets the run could not read, usually for want of a licence or a permission.
+	column NotCollected
+		dataType: int64
+		lineageTag: 887b1eda-4278-5e2b-838f-6ba4fec633f2
+		summarizeBy: none
+		sourceColumn: NotCollected
+
+		annotation SummarizationSetBy = User
+
+	/// The tenant's latest run.
+	column IsLatest
+		dataType: boolean
+		lineageTag: 2c143d67-70e4-5867-bce6-07bb47660474
+		summarizeBy: none
+		sourceColumn: IsLatest
+
+		annotation SummarizationSetBy = User
+
+	column AgeDays
+		dataType: int64
+		lineageTag: 66f2f3e8-726e-5e30-aedb-69182fc01a87
+		summarizeBy: none
+		sourceColumn: AgeDays
+
+		annotation SummarizationSetBy = User
+
+	column IsStale
+		dataType: boolean
+		lineageTag: 54033773-d83d-5771-b020-d99159f05006
+		summarizeBy: none
+		sourceColumn: IsStale
+
+		annotation SummarizationSetBy = User
+
+	column InTrendWindow
+		dataType: boolean
+		isHidden
+		lineageTag: 95bc9426-4718-52c0-a9b6-6ae9957c9c6c
+		summarizeBy: none
+		sourceColumn: InTrendWindow
+
+		annotation SummarizationSetBy = User
+
+	column Flags
+		dataType: string
+		lineageTag: 820069b2-94e4-5e2f-b13d-aaa9bab0a5fa
+		summarizeBy: none
+		sourceColumn: Flags
+
+		annotation SummarizationSetBy = User
+
+	column ReportFile
+		dataType: string
+		lineageTag: 0de0deee-ae08-5128-b22a-1ce70a823510
+		summarizeBy: none
+		sourceColumn: ReportFile
+
+		annotation SummarizationSetBy = User
+
+	partition Runs = m
+		mode: import
+		source =
+				let
+				    Now = DateTimeZone.RemoveZone(DateTimeZone.UtcNow()),
+				    Rows = Table.AddColumn(Reports, "R", each
+				        let
+				            d = [Doc],
+				            c = Record.FieldOrDefault(d, "Counts", []),
+				            r = Record.FieldOrDefault(d, "Results", {}),
+				            ds = Record.FieldOrDefault(d, "Datasets", []),
+				            states = List.Transform(Record.FieldValues(ds), each Record.FieldOrDefault(_, "Status", ""))
+				        in
+				            [RunKey = [RunKey], TenantId = [Tenant], CollectedUtc = [CollectedUtc],
+				             ToolVersion = Record.FieldOrDefault(d, "Version", null),
+				             Checks = List.Count(if r is list then r else {r}),
+				             Fail = Record.FieldOrDefault(c, "Fail", 0), Warn = Record.FieldOrDefault(c, "Warn", 0),
+				             Pass = Record.FieldOrDefault(c, "Pass", 0), Skipped = Record.FieldOrDefault(c, "Skipped", 0),
+				             Error = Record.FieldOrDefault(c, "Error", 0),
+				             NotCollected = List.Count(List.Select(states, each _ <> "Collected")),
+				             ReportFile = [Name]]),
+				    // Named columns, so the table keeps its shape when there are no runs.
+				    Table1 = Table.FromRecords(Rows[R], {"RunKey", "TenantId", "CollectedUtc", "ToolVersion", "Checks",
+				        "Fail", "Warn", "Pass", "Skipped", "Error", "NotCollected", "ReportFile"}),
+				    Latest = Table.Group(Table1, {"TenantId"}, {{"LatestUtc", each List.Max([CollectedUtc]), type datetime}}),
+				    Joined = Table.ExpandTableColumn(Table.NestedJoin(Table1, {"TenantId"}, Latest, {"TenantId"}, "L", JoinKind.LeftOuter), "L", {"LatestUtc"}),
+				    IsLatest = Table.AddColumn(Joined, "IsLatest", each [CollectedUtc] = [LatestUtc], type logical),
+				    Age = Table.AddColumn(IsLatest, "AgeDays", each Duration.Days(Now - [CollectedUtc]), Int64.Type),
+				    Stale = Table.AddColumn(Age, "IsStale", each [IsLatest] and [AgeDays] > StaleDays, type logical),
+				    Window = Table.AddColumn(Stale, "InTrendWindow", each [IsLatest] or [CollectedUtc] >= Now - #duration(TrendDays, 0, 0, 0), type logical),
+				    Flags = Table.AddColumn(Window, "Flags", each Text.Combine(List.RemoveNulls({
+				        if [IsStale] then "Stale" else null,
+				        if [Error] > 0 then "Errors" else null,
+				        if [NotCollected] > 0 then Text.From([NotCollected]) & " dataset(s) not collected" else null}), ", "), type text),
+				    Kept = Table.RemoveColumns(Flags, {"LatestUtc"}),
+				    Typed = Table.TransformColumnTypes(Kept, {
+				        {"RunKey", type text}, {"TenantId", type text}, {"CollectedUtc", type datetime}, {"ToolVersion", type text},
+				        {"Checks", Int64.Type}, {"Fail", Int64.Type}, {"Warn", Int64.Type}, {"Pass", Int64.Type}, {"Skipped", Int64.Type},
+				        {"Error", Int64.Type}, {"NotCollected", Int64.Type}, {"ReportFile", type text}})
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table
+

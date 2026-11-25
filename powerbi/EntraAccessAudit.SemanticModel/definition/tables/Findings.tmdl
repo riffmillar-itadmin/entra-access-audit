@@ -1,0 +1,53 @@
+/// One row per finding: the account, app, policy or setting a check named, and why.
+table Findings
+	lineageTag: 8f6b0c63-1b46-5114-9a55-8d9aebad5595
+
+	measure 'Finding count' = COUNTROWS(Findings) + 0
+		formatString: 0
+		lineageTag: 612404a5-231c-5026-8362-9f52611103ce
+
+	column ResultKey
+		dataType: string
+		isHidden
+		lineageTag: cd3675a2-8f99-5a0a-85d2-7a552c9ea873
+		summarizeBy: none
+		sourceColumn: ResultKey
+
+		annotation SummarizationSetBy = User
+
+	column Subject
+		dataType: string
+		lineageTag: 00cb3050-68f3-55b2-be85-7e7b2be18b60
+		summarizeBy: none
+		sourceColumn: Subject
+
+		annotation SummarizationSetBy = User
+
+	column Detail
+		dataType: string
+		lineageTag: 50dbf5b4-5317-5568-8c89-2103f9a5cf64
+		summarizeBy: none
+		sourceColumn: Detail
+
+		annotation SummarizationSetBy = User
+
+	partition Findings = m
+		mode: import
+		source =
+				let
+				    Rows = Table.AddColumn(Reports, "Rows", each let r = Record.FieldOrDefault([Doc], "Results", {}) in if r is list then r else {r}),
+				    Expanded = Table.ExpandListColumn(Table.SelectColumns(Rows, {"RunKey", "Rows"}), "Rows"),
+				    Present = Table.SelectRows(Expanded, each [Rows] is record),
+				    Checks = Table.ExpandRecordColumn(Present, "Rows", {"Id", "Findings"}),
+				    Listed = Table.TransformColumns(Checks, {{"Findings", each if _ = null then {} else if _ is list then _ else {_}}}),
+				    One = Table.ExpandListColumn(Listed, "Findings"),
+				    Kept = Table.SelectRows(One, each [Findings] is record),
+				    Fields = Table.ExpandRecordColumn(Kept, "Findings", {"Subject", "Detail"}),
+				    Key = Table.AddColumn(Fields, "ResultKey", each [RunKey] & "|" & [Id], type text),
+				    Typed = Table.TransformColumnTypes(Table.SelectColumns(Key, {"ResultKey", "Subject", "Detail"}), {
+				        {"Subject", type text}, {"Detail", type text}})
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table
+

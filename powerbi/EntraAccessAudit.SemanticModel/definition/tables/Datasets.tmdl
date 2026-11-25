@@ -1,0 +1,63 @@
+/// One row per dataset per run: whether it was collected, and why not.
+table Datasets
+	lineageTag: 502e9bd1-19fd-5fda-8229-01549de9885a
+
+	measure 'Datasets not collected' = CALCULATE(COUNTROWS(Datasets), Datasets[Status] <> "Collected") + 0
+		formatString: 0
+		lineageTag: 0d6d8214-8745-52b0-b4ca-9cdf57294b5b
+
+	column RunKey
+		dataType: string
+		isHidden
+		lineageTag: 9678ed60-1e5f-5674-9b82-340ab11c37a3
+		summarizeBy: none
+		sourceColumn: RunKey
+
+		annotation SummarizationSetBy = User
+
+	column Dataset
+		dataType: string
+		lineageTag: 97c3a7bb-41e6-5a8c-8ef8-66766be8893f
+		summarizeBy: none
+		sourceColumn: Dataset
+
+		annotation SummarizationSetBy = User
+
+	column Status
+		dataType: string
+		lineageTag: 1779944e-772a-58a5-864b-1002b9ef1cc1
+		summarizeBy: none
+		sourceColumn: Status
+
+		annotation SummarizationSetBy = User
+
+	column Items
+		dataType: int64
+		lineageTag: 963587d6-71cc-5757-8687-9dea5018abf2
+		summarizeBy: none
+		sourceColumn: Items
+
+		annotation SummarizationSetBy = User
+
+	column Reason
+		dataType: string
+		lineageTag: 18163b91-6e94-5797-af2c-e3d202f938de
+		summarizeBy: none
+		sourceColumn: Reason
+
+		annotation SummarizationSetBy = User
+
+	partition Datasets = m
+		mode: import
+		source =
+				let
+				    Rows = Table.AddColumn(Reports, "Rows", each Record.ToTable(Record.FieldOrDefault([Doc], "Datasets", []))),
+				    Expanded = Table.ExpandTableColumn(Table.SelectColumns(Rows, {"RunKey", "Rows"}), "Rows", {"Name", "Value"}, {"Dataset", "Value"}),
+				    Fields = Table.ExpandRecordColumn(Expanded, "Value", {"Status", "Items", "Reason"}),
+				    Typed = Table.TransformColumnTypes(Fields, {
+				        {"RunKey", type text}, {"Dataset", type text}, {"Status", type text}, {"Items", Int64.Type}, {"Reason", type text}})
+				in
+				    Typed
+
+	annotation PBI_ResultType = Table
+
