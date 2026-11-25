@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Report",
+    "displayName": "EntraAccessAudit"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "18bda535-1e69-5662-be77-fe19857d5500"
+  }
+}

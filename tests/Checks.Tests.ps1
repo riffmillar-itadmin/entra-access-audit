@@ -865,6 +865,19 @@ Describe 'Service accounts' {
         (Get-Result $s)['SVC-03'].Status | Should -Be 'Pass'
     }
 
+    It 'SVC-03 counts Microsoft''s documented apps as Microsoft''s, whatever owner tenant the service principal shows' {
+        # Regression: a live tenant showed Microsoft Graph Command Line Tools
+        # owned by a tenant not in MicrosoftTenantIds, and SVC-03 failed it.
+        $s = Get-Fixture
+        $sp = Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Backup'
+        $sp.appId = '14d82eec-204b-4c2f-b7e8-296a70dab67e'
+        (Get-Result $s)['SVC-03'].Status | Should -Be 'Pass'
+        $sp.appId = 'de8bc8b5-d9f9-48b1-a8ad-b748da725064'
+        (Get-Result $s)['SVC-03'].Status | Should -Be 'Pass'
+        $sp.appId = '00000000-0000-4000-8000-000000000777'
+        (Get-Result $s)['SVC-03'].Status | Should -Be 'Fail'
+    }
+
     It 'SVC-03 counts tenant-wide delegated consent, but not one user''s' {
         $s = Get-Fixture
         (Get-FixtureItem $s 'ServicePrincipals' 'displayName' 'Westmark Mail Assistant').appOwnerOrganizationId = '00000000-0000-4000-8000-000000000888'

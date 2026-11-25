@@ -1,0 +1,54 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.4.0/schema.json",
+  "name": "FindingsStatus",
+  "position": {
+    "x": 1054,
+    "y": 8,
+    "width": 210,
+    "height": 64,
+    "z": 16000,
+    "tabOrder": 16000
+  },
+  "visual": {
+    "visualType": "slicer",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {
+              "field": {
+                "Column": {
+                  "Expression": {
+                    "SourceRef": {
+                      "Entity": "Results"
+                    }
+                  },
+                  "Property": "Status"
+                }
+              },
+              "queryRef": "Results.Status",
+              "nativeQueryRef": "Result",
+              "active": true,
+              "displayName": "Result"
+            }
+          ]
+        }
+      }
+    },
+    "objects": {
+      "data": [
+        {
+          "properties": {
+            "mode": {
+              "expr": {
+                "Literal": {
+                  "Value": "'Dropdown'"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

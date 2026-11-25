@@ -46,6 +46,9 @@ Describe 'Write-AuditReport' {
         $text | Should -Match '"CollectedAt":\s*"2026-11-01T12:00:00Z"'
         $json = $text | ConvertFrom-Json
         $json.Version | Should -Be $EntraAccessAuditVersion
+        $json.Tool | Should -Be 'entra-access-audit'
+        # The Power BI template tells tenants apart by this.
+        $json.TenantId | Should -Be '00000000-0000-4000-8000-000000000999'
         $json.Counts.Fail | Should -Be @($Results | Where-Object Status -eq 'Fail').Count
         $json.Datasets.Users.Status | Should -Be 'Collected'
         @($json.Results).Count | Should -Be $AuditChecks.Count

@@ -36,7 +36,8 @@
     Writes these files into -OutputPath, named by collection time (UTC):
         entra-access-audit-<time>.html   a self-contained report
         entra-access-audit-<time>.csv    one row per finding
-        entra-access-audit-<time>.json   results, dataset status and thresholds
+        entra-access-audit-<time>.json   tenant, results, dataset status and
+                                         thresholds; Power BI reads these
     The reports name real accounts and apps. Keep them somewhere private.
 
     Exit codes: 0 no Fail and no Error; 1 at least one Fail; 2 at least one
@@ -159,6 +160,13 @@
                        the checks that will then be Skipped. New scope
                        Organization.Read.All, to read the subscriptions.
                        Snapshot schema 7.
+    0.8.0  2026-11-24  Power BI template, built from the project in
+                       powerbi/: the latest run per tenant, trends across
+                       runs, and every finding. The JSON report names the
+                       tenant. Fix: SVC-03 called Microsoft Graph Command
+                       Line Tools another organization's app when its owner
+                       tenant wasn't one it knew; Microsoft's documented
+                       app IDs now count as Microsoft's.
 #>
 
 [CmdletBinding()]
@@ -175,7 +183,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.7.0'
+$EntraAccessAuditVersion = '0.8.0'
 $SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.
@@ -266,6 +274,14 @@ $BreakGlassTestDays = 90
 $MicrosoftTenantIds = @(
     'f8cdef31-a31e-4b4a-93e4-5f571e91255a'   # Microsoft Services
     '72f988bf-86f1-41af-91ab-2d7cd011db47'   # Microsoft
+)
+
+# Microsoft's own apps that a tenant can show with another owner tenant, by
+# app ID, which no other app can have. Microsoft lists both as its own in
+# "Verify first-party Microsoft applications in sign-in reports".
+$MicrosoftAppIds = @(
+    '14d82eec-204b-4c2f-b7e8-296a70dab67e'   # Microsoft Graph Command Line Tools
+    'de8bc8b5-d9f9-48b1-a8ad-b748da725064'   # Graph Explorer
 )
 
 # Built-in roles treated as privileged, by template ID (the same in every
@@ -2015,6 +2031,7 @@ $AuditChecks = @(
                 if ($null -eq $sp) { continue }
                 $owner = "$(Get-Value $sp 'appOwnerOrganizationId')"
                 if (-not $owner -or $owner -eq $Context.TenantId -or $MicrosoftTenantIds -contains $owner) { continue }
+                if ($MicrosoftAppIds -contains "$(Get-Value $sp 'appId')") { continue }
                 if (Test-AcceptedApp $Context $sp) { $accepted++; continue }
                 New-Finding "$(Get-Value $sp 'displayName')" "$(@($byApp[$id] | Sort-Object -Unique) -join ', '); published by tenant $owner"
             }
@@ -2690,6 +2707,7 @@ function Write-AuditReport {
         Tool        = 'entra-access-audit'
         Version     = $EntraAccessAuditVersion
         CollectedAt = ConvertTo-SnapshotValue (ConvertTo-UtcDate (Get-Value $Snapshot 'CollectedAt'))
+        TenantId    = "$(Get-Value $Snapshot 'TenantId')"
         Counts      = Get-StatusCount $Results
         Datasets    = $datasets
         Thresholds  = $AuditProfile
