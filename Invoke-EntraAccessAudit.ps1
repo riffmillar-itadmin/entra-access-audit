@@ -172,6 +172,8 @@
                        tools/Build-Module.ps1 for the PowerShell Gallery:
                        Invoke-EntraAccessAudit runs this script with the
                        same parameters and help, and sets $LASTEXITCODE.
+    1.0.0  2026-11-25  First public release, and on the PowerShell Gallery:
+                       Install-Module EntraAccessAudit.
 #>
 
 [CmdletBinding()]
@@ -188,7 +190,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.9.0'
+$EntraAccessAuditVersion = '1.0.0'
 $SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.

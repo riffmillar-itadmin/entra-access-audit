@@ -182,6 +182,13 @@ Describe 'Building the module' {
         }
     }
 
+    It 'documents installing from the Gallery by the module''s name, as released' {
+        $text = [IO.File]::ReadAllText((Join-Path $Root 'README.md'))
+        $text | Should -Match "(?m)^Install-Module $($Data.RootModule -replace '\.psm1$') -Scope CurrentUser\s*$"
+        $text | Should -Match '(?m)^Invoke-EntraAccessAudit\s*$'
+        $text | Should -Not -Match '(?i)from 1\.0\.0 (the audit|it) is'
+    }
+
     It 'keeps the built module out of git' {
         [IO.File]::ReadAllLines((Join-Path $Root '.gitignore')) | Should -Contain 'out/'
     }
