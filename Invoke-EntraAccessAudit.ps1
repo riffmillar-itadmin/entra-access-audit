@@ -76,7 +76,8 @@
 .PARAMETER ProfilePath
     Thresholds file to use instead of the defaults (see
     EntraAccessAudit.example.psd1). Without it, an EntraAccessAudit.local.psd1
-    beside the script is used if present.
+    beside the script is used if present. The module is replaced on every
+    update, so with the module, keep the file elsewhere and name it here.
 
 .PARAMETER TenantId
     The tenant to sign in to. Required with -CertificateThumbprint.
@@ -167,6 +168,10 @@
                        Line Tools another organization's app when its owner
                        tenant wasn't one it knew; Microsoft's documented
                        app IDs now count as Microsoft's.
+    0.9.0  2026-11-25  Also a PowerShell module, EntraAccessAudit, built by
+                       tools/Build-Module.ps1 for the PowerShell Gallery:
+                       Invoke-EntraAccessAudit runs this script with the
+                       same parameters and help, and sets $LASTEXITCODE.
 #>
 
 [CmdletBinding()]
@@ -183,7 +188,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '0.8.0'
+$EntraAccessAuditVersion = '0.9.0'
 $SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.
