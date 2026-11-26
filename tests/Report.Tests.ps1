@@ -73,6 +73,32 @@ Describe 'Write-AuditReport' {
     }
 }
 
+Describe 'Write-AuditReport with a relative path' {
+    It 'writes under PowerShell''s current folder, not the process''s' {
+        # Regression: a relative -OutputPath went to the folder PowerShell
+        # started in, and failed when no such folder existed there.
+        $here = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        $other = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        $null = New-Item -ItemType Directory -Path $here, $other
+        $snapshot = Read-Snapshot -Path (Join-Path $PSScriptRoot 'fixtures/westmark.snapshot.json')
+        $westmark = Get-AuditProfile -Path (Join-Path $PSScriptRoot 'fixtures/westmark.psd1')
+        $results = @(Invoke-AuditCheck -Snapshot $snapshot -AuditProfile $westmark)
+        $saved = [Environment]::CurrentDirectory
+        Push-Location -LiteralPath $here
+        try {
+            [Environment]::CurrentDirectory = $other
+            $files = @(Write-AuditReport -Results $results -Snapshot $snapshot -AuditProfile $westmark -Path (Join-Path '.' 'nested') -WarningAction SilentlyContinue)
+        } finally {
+            [Environment]::CurrentDirectory = $saved
+            Pop-Location
+        }
+        $files.Count | Should -Be 3
+        foreach ($f in $files) { [IO.Path]::IsPathRooted("$f") | Should -BeTrue -Because "$f" }
+        @(Get-ChildItem -LiteralPath (Join-Path $here 'nested')).Count | Should -Be 3
+        Test-Path -LiteralPath (Join-Path $other 'nested') | Should -BeFalse
+    }
+}
+
 Describe 'Get-AuditExitCode' {
     BeforeAll {
         function Get-Code {

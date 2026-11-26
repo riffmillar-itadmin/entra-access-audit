@@ -174,6 +174,10 @@
                        same parameters and help, and sets $LASTEXITCODE.
     1.0.0  2026-11-25  First public release, and on the PowerShell Gallery:
                        Install-Module EntraAccessAudit.
+    1.0.1  2026-11-25  Fix: a relative -OutputPath was resolved against the
+                       folder PowerShell started in, not the current
+                       folder, so the reports failed to write or went to
+                       the wrong place.
 #>
 
 [CmdletBinding()]
@@ -190,7 +194,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '1.0.0'
+$EntraAccessAuditVersion = '1.0.1'
 $SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.
@@ -2692,6 +2696,9 @@ function ConvertTo-AuditHtml {
 function Write-AuditReport {
     # Writes the HTML, CSV and JSON reports and returns their paths.
     param([Parameter(Mandatory)]$Results, [Parameter(Mandatory)]$Snapshot, [Parameter(Mandatory)]$AuditProfile, [Parameter(Mandatory)][string]$Path)
+    # .NET resolves a relative path against the process's folder, not
+    # PowerShell's current location, so resolve it here first.
+    $Path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
     if (-not (Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
     $stamp = (ConvertTo-UtcDate (Get-Value $Snapshot 'CollectedAt')).ToString('yyyyMMddTHHmmssZ', [Globalization.CultureInfo]::InvariantCulture)
     $base = Join-Path $Path "entra-access-audit-$stamp"
