@@ -103,6 +103,16 @@ Describe 'Files' {
         }
     }
 
+    It 'has Dependabot keep the workflow''s GitHub Actions up to date' {
+        $path = Join-Path $Root '.github/dependabot.yml'
+        Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
+        $text = [IO.File]::ReadAllText($path)
+        $text | Should -Match '(?m)^version: 2\s*$'
+        $text | Should -Match '(?m)^\s*- package-ecosystem: "github-actions"\s*$'
+        $text | Should -Match '(?m)^\s*directory: "/"\s*$'
+        $text | Should -Match '(?m)^\s*interval: "(daily|weekly|monthly)"\s*$'
+    }
+
     It 'uses only fictional IDs in the fixture, apart from Microsoft''s well-known ones' {
         $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'fixtures/westmark.snapshot.json'))
         $known = @($PrivilegedRoles.Keys) + @($GraphAppId) + @($MicrosoftTenantIds) + @($GuestAccessLevels.Keys) + @('f2ef992c-3afb-46b9-b7cf-a126ee74c451', '00000000-0000-0000-0000-000000000004')

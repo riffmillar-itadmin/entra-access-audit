@@ -37,29 +37,37 @@ runs on Windows PowerShell 5.1 and PowerShell 7, needs only the
 
 ## Getting started
 
-From 1.0.0 the audit is also on the PowerShell Gallery as the
-`EntraAccessAudit` module; see [The module](#the-module). From this
-repository:
+Install it from the PowerShell Gallery, or download it from GitHub. Either
+way, it needs the Graph authentication module to sign in:
 
-1. Install the Graph authentication module, once:
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+```
 
-   ```powershell
-   Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
-   ```
+**From the PowerShell Gallery**, as the `EntraAccessAudit` module:
 
-2. Download this repository (Code, Download ZIP) and unblock the files, so
-   Windows doesn't stop them as downloaded scripts:
+```powershell
+Install-Module EntraAccessAudit -Scope CurrentUser
+Invoke-EntraAccessAudit
+```
 
-   ```powershell
-   Get-ChildItem -Recurse | Unblock-File
-   ```
+The command runs the same script with the same parameters and help; see
+[The module](#the-module). This README shows the script form,
+`.\Invoke-EntraAccessAudit.ps1`; with the module, drop the `.\` and `.ps1`.
 
-3. Run it. A browser window asks you to sign in and to consent to the
-   read-only scopes:
+**From GitHub**: download the latest
+[Release](https://github.com/riffmillar-itadmin/entra-access-audit/releases/latest)
+(**Source code (zip)**) and extract it, or `git clone` the repository. Unblock
+the extracted files, so Windows doesn't stop them as downloaded scripts, and
+run it:
 
-   ```powershell
-   .\Invoke-EntraAccessAudit.ps1
-   ```
+```powershell
+Get-ChildItem -Recurse | Unblock-File
+.\Invoke-EntraAccessAudit.ps1
+```
+
+Either way, a browser window asks you to sign in and to consent to the
+read-only scopes.
 
 The reports go to a `Reports` folder in the current folder. To see what a
 report looks like without a tenant, run it on the fictional tenant the tests
@@ -206,12 +214,13 @@ Membership that PIM for Groups makes eligible isn't read yet.
 
 The `EntraAccessAudit` module holds the same script, with one command,
 `Invoke-EntraAccessAudit`, that takes the same parameters and has the same
-help. It sets `$LASTEXITCODE` to the script's exit code. From 1.0.0 it is on
-the PowerShell Gallery:
+help. It sets `$LASTEXITCODE` to the script's exit code. It is on the
+PowerShell Gallery:
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 Install-Module EntraAccessAudit -Scope CurrentUser
+Update-Module EntraAccessAudit          # later, for a new release
 Invoke-EntraAccessAudit -OutputPath D:\Audits -ProfilePath D:\Audits\EntraAccessAudit.local.psd1
 ```
 
@@ -416,6 +425,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 1.0.0 | 2026-11-25 | First public release, and on the PowerShell Gallery as `EntraAccessAudit`: `Install-Module EntraAccessAudit`. Getting started covers the Gallery and GitHub. Dependabot keeps the workflow's GitHub Actions up to date. |
 | 0.9.0 | 2026-11-25 | The audit is also a PowerShell module, `EntraAccessAudit`, built by `tools/Build-Module.ps1` for the PowerShell Gallery (published from 1.0.0): `Invoke-EntraAccessAudit` runs the same script with the same parameters and help, and sets `$LASTEXITCODE`. The tests build and import it on both editions, and lint checks the built module. README: The module, Publishing the module. Fix: Unattended runs said to grant seven permissions; there are eight since 0.7.0. |
 | 0.8.0 | 2026-11-24 | Power BI template. `EntraAccessAudit.pbit` on the Release, built from the Power BI project in `powerbi/`, reads every JSON report in a folder: an Overview of each tenant's latest run, Trends across runs with a grid of every check by run, and every Finding with the data that wasn't collected. No account needed. The JSON report now names the tenant. README screenshots of the HTML report and the template, from the fictional Westmark tenant. Fix: SVC-03 failed Microsoft Graph Command Line Tools as another organization's app when its service principal showed an owner tenant the audit didn't know; Microsoft's documented app IDs for it and Graph Explorer now count as Microsoft's. |
 | 0.7.0 | 2026-11-24 | Now with 44 checks. TEN-07 Entra ID P1 or P2 ending: warns before a trial that is the only source of P1 or P2 ends, so a lab or pilot tenant doesn't find out from a report full of Skipped checks, and fails on one that has expired or been suspended. New `LicenceExpiryDays` setting. New scope `Organization.Read.All`, to read the subscriptions; Global Reader still covers it. Snapshot schema 7; on older snapshots TEN-07 is Skipped. |
