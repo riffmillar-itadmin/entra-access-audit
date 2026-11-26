@@ -134,6 +134,22 @@ Describe 'Running the module' {
         @($results | Where-Object Status -eq 'Fail').Count | Should -BeGreaterThan 0
     }
 
+    It 'writes a relative -OutputPath under the current folder, not the process''s' {
+        # Regression: .NET resolved the path against the folder PowerShell
+        # started in, so the reports failed to write or went elsewhere.
+        $other = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+        $null = New-Item -ItemType Directory -Path $other
+        $saved = [Environment]::CurrentDirectory
+        try {
+            [Environment]::CurrentDirectory = $other
+            $null = Invoke-EntraAccessAudit -FromSnapshot $FixturePath -ProfilePath $ProfileFixture -OutputPath '.\Audits' 6>$null
+        } finally {
+            [Environment]::CurrentDirectory = $saved
+        }
+        @(Get-ChildItem -LiteralPath (Join-Path $Work 'Audits') -Filter 'entra-access-audit-*').Count | Should -Be 3
+        Test-Path -LiteralPath (Join-Path $other 'Audits') | Should -BeFalse
+    }
+
     It 'exits 2 through the module when it cannot start' {
         $null = Invoke-EntraAccessAudit -FromSnapshot (Join-Path $Work 'missing.json') -OutputPath (Join-Path $Work 'out') 6>$null
         $LASTEXITCODE | Should -Be 2
