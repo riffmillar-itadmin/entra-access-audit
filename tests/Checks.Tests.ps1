@@ -1109,7 +1109,7 @@ Describe 'Tenant settings' {
             param($Snapshot)
             foreach ($upn in 'bg.one@westmark.example', 'bg.two@westmark.example') {
                 $u = Get-FixtureItem $Snapshot 'Users' 'userPrincipalName' $upn
-                $u | Add-Member -NotePropertyName signInActivity -NotePropertyValue ([pscustomobject]@{ lastSignInDateTime = '2026-10-15T09:00:00Z' }) -Force
+                $u | Add-Member -NotePropertyName signInActivity -NotePropertyValue ([pscustomobject]@{ lastSignInDateTime = '2026-10-15T09:00:00Z'; lastSuccessfulSignInDateTime = '2026-10-15T09:00:00Z' }) -Force
             }
         }
     }
@@ -1266,16 +1266,44 @@ Describe 'Tenant settings' {
         $s = Get-Fixture; Set-BreakGlassTested $s
         $r = (Get-Result $s)['TEN-06']
         $r.Status | Should -Be 'Pass'
-        $r.Summary | Should -Match '^All 2 break-glass accounts .* outside every enforced Conditional Access policy and signed in within 90 days\.$'
+        $r.Summary | Should -Match '^All 2 break-glass accounts .* outside every enforced Conditional Access policy and signed in successfully within 90 days\.$'
     }
 
     It 'TEN-06 warns on a break-glass account never tested, or not in 90 days' {
         $r = (Get-Result (Get-Fixture))['TEN-06']
         $r.Status | Should -Be 'Warn'
         @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
-            'bg.one@westmark.example: Last signed in 2026-01-15. Test it at least every 90 days.'
-            'bg.two@westmark.example: No sign-in recorded, so it has never been tested. Test it at least every 90 days. Sign-in activity can take a few hours to appear.'
+            'bg.one@westmark.example: Last signed in successfully 2026-01-15. Test it at least every 90 days. Microsoft Graph can take up to 24 hours to show a sign-in.'
+            'bg.two@westmark.example: No sign-in recorded, so it has never been tested. Test it at least every 90 days. Microsoft Graph can take up to 24 hours to show a sign-in.'
         )
+    }
+
+    It 'TEN-06 warns on a break-glass account whose sign-ins all failed, rather than counting them as a test' {
+        # Regression: a live drill's failed sign-in (attempt recorded, no
+        # success) made TEN-06 stop saying the account was never tested.
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $two = Get-FixtureItem $s 'Users' 'userPrincipalName' 'bg.two@westmark.example'
+        $two | Add-Member -NotePropertyName signInActivity -NotePropertyValue ([pscustomobject]@{ lastSignInDateTime = '2026-10-31T01:03:11Z'; lastNonInteractiveSignInDateTime = $null; lastSuccessfulSignInDateTime = $null }) -Force
+        $r = (Get-Result $s)['TEN-06']
+        $r.Status | Should -Be 'Warn'
+        @($r.Findings | ForEach-Object { "$($_.Subject): $($_.Detail)" }) | Should -Be @(
+            'bg.two@westmark.example: Sign-in attempted 2026-10-31, but no successful sign-in is recorded, so it hasn''t been shown to work. Test it at least every 90 days. Microsoft Graph can take up to 24 hours to show a sign-in.'
+        )
+    }
+
+    It 'TEN-06 reads a successful sign-in given as a DateTime in UTC, as Graph returns it on PowerShell 7' {
+        # Invoke-MgGraphRequest and ConvertFrom-Json on 7 return DateTime,
+        # not strings. A Local or Unspecified Kind must not shift the date.
+        $s = Get-Fixture; Set-BreakGlassTested $s
+        $collected = ConvertTo-UtcDate $s.CollectedAt
+        $edge = $collected.AddDays(-90).AddHours(1)
+        $one = Get-FixtureItem $s 'Users' 'userPrincipalName' 'bg.one@westmark.example'
+        $one.signInActivity.lastSuccessfulSignInDateTime = [datetime]::SpecifyKind($edge, [DateTimeKind]::Unspecified)
+        $two = Get-FixtureItem $s 'Users' 'userPrincipalName' 'bg.two@westmark.example'
+        $two.signInActivity.lastSuccessfulSignInDateTime = $edge.ToLocalTime()
+        (Get-Result $s)['TEN-06'].Status | Should -Be 'Pass'
+        $one.signInActivity.lastSuccessfulSignInDateTime = [datetime]::SpecifyKind($collected.AddDays(-90).AddHours(-1), [DateTimeKind]::Unspecified)
+        (Get-Result $s)['TEN-06'].Status | Should -Be 'Warn'
     }
 
     It 'TEN-06 says the test sign-in was not checked without sign-in activity' {

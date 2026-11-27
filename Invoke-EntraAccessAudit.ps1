@@ -178,6 +178,11 @@
                        folder PowerShell started in, not the current
                        folder, so the reports failed to write or went to
                        the wrong place.
+    1.0.2  2026-11-27  Fix: TEN-06 counted a failed sign-in attempt as a
+                       test of a break-glass account. It now counts only a
+                       successful sign-in, and says when there were
+                       attempts but none succeeded. Its warnings say Graph
+                       can take up to 24 hours to show a sign-in.
 #>
 
 [CmdletBinding()]
@@ -194,7 +199,7 @@ param(
 
 Set-StrictMode -Version Latest
 
-$EntraAccessAuditVersion = '1.0.1'
+$EntraAccessAuditVersion = '1.0.2'
 $SnapshotSchemaVersion = 7
 
 # The delegated scopes the collector asks for. All read-only.
@@ -2386,11 +2391,19 @@ $AuditChecks = @(
                     if ($unknown.Count) { $warn.Add((New-Finding "$upn" "Couldn't tell whether these policies apply, because their groups' members weren't collected: $($unknown -join '; ').")) }
                 }
                 if ($signIns) {
-                    $last = Get-LastSignIn $u
-                    if ($null -eq $last) {
-                        $warn.Add((New-Finding "$upn" "No sign-in recorded, so it has never been tested. Test it at least every $BreakGlassTestDays days. Sign-in activity can take a few hours to appear."))
+                    # Only a sign-in that succeeded shows the account works:
+                    # a failed attempt is a failed test, not a test.
+                    # Graph can take up to 24 hours to update signInActivity,
+                    # so a test from yesterday may not show yet.
+                    $lag = 'Microsoft Graph can take up to 24 hours to show a sign-in.'
+                    $last = ConvertTo-UtcDate (Get-Value $u 'signInActivity', 'lastSuccessfulSignInDateTime')
+                    $tried = Get-LastSignIn $u
+                    if ($null -eq $last -and $null -ne $tried) {
+                        $warn.Add((New-Finding "$upn" "Sign-in attempted $(Format-AuditDate $tried), but no successful sign-in is recorded, so it hasn't been shown to work. Test it at least every $BreakGlassTestDays days. $lag"))
+                    } elseif ($null -eq $last) {
+                        $warn.Add((New-Finding "$upn" "No sign-in recorded, so it has never been tested. Test it at least every $BreakGlassTestDays days. $lag"))
                     } elseif ($last -lt $Context.Now.AddDays(-$BreakGlassTestDays)) {
-                        $warn.Add((New-Finding "$upn" "Last signed in $(Format-AuditDate $last). Test it at least every $BreakGlassTestDays days."))
+                        $warn.Add((New-Finding "$upn" "Last signed in successfully $(Format-AuditDate $last). Test it at least every $BreakGlassTestDays days. $lag"))
                     }
                 }
             }
@@ -2398,7 +2411,7 @@ $AuditChecks = @(
             if ($fail.Count) { return (New-Outcome Fail "$($fail.Count) problem(s) with the break-glass accounts would stop them working in an emergency.$note" @($fail.ToArray() + $warn.ToArray())) }
             if ($listed.Count -lt 2) { $warn.Add((New-Finding "$($listed[0])" "The only break-glass account. $how")) }
             if ($warn.Count) { return (New-Outcome Warn "$($warn.Count) thing(s) to review about the break-glass accounts.$note" $warn.ToArray()) }
-            $tested = if ($signIns) { " and signed in within $BreakGlassTestDays days" } else { '' }
+            $tested = if ($signIns) { " and signed in successfully within $BreakGlassTestDays days" } else { '' }
             return (New-Outcome Pass "All $($listed.Count) break-glass accounts exist, are enabled and cloud-only, hold Global Administrator, are outside every enforced Conditional Access policy$tested.$note")
         }
     }
