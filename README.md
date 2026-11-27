@@ -183,7 +183,7 @@ expired or been suspended. Two cases are different:
 | TEN-03 | Tenant settings | Medium | Guest access and invitations | Warn when guests have the same directory access as members, anyone including guests can invite guests, or anyone with a verified email can join. |
 | TEN-04 | Tenant settings | Medium | Text message and voice call sign-in methods | Warn for each enabled in the authentication methods policy, and notes when the legacy MFA and SSPR settings still apply. |
 | TEN-05 | Tenant settings | Low | Cross-tenant access defaults | Warn when the defaults allow B2B direct connect, or redeem invitations automatically, for every other organization. |
-| TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, not an active Global Administrator, or reached by an enforced Conditional Access policy. Warn when one hasn't signed in within 90 days, when it can't be told whether a policy reaches one, and when none or only one is listed. |
+| TEN-06 | Tenant settings | High | Break-glass accounts | Fail for a `BreakGlassAccounts` account that is missing, disabled, synced from on-premises, not an active Global Administrator, or reached by an enforced Conditional Access policy. Warn when one hasn't signed in successfully within 90 days (a failed attempt isn't a test), when it can't be told whether a policy reaches one, and when none or only one is listed. |
 | TEN-07 | Tenant settings | Medium | Entra ID P1 or P2 ending | Warn when the only subscriptions carrying P1 or P2 are trials ending within `LicenceExpiryDays` (30), naming the checks that will be Skipped. Fail when they have expired (grace period) or been suspended. A paid subscription's renewal date doesn't count. |
 
 Privileged roles are Global Administrator and the other built-in roles that
@@ -268,9 +268,10 @@ findings. They still count toward ROLE-01 and still need MFA. TEN-06 checks
 them against Microsoft's guidance for emergency access accounts: each exists,
 is enabled and cloud-only, holds Global Administrator actively (not only
 eligible through PIM), is outside every enforced Conditional Access policy,
-directly or through an excluded group or role, and has signed in within 90
-days, so you know it works. It warns when fewer than two are listed. Graph's
-sign-in activity can take a few hours to show a test sign-in.
+directly or through an excluded group or role, and has signed in successfully
+within 90 days, so you know it works. A failed sign-in attempt doesn't count.
+It warns when fewer than two are listed. Microsoft Graph can take up to 24
+hours to show a sign-in, so run the audit a day after a test.
 
 A setting the script doesn't know stops the run, so a misspelt one can't be
 silently ignored.
@@ -425,6 +426,7 @@ tests and I decide what ships.
 
 | Version | Date | Changes |
 | --- | --- | --- |
+| 1.0.2 | 2026-11-27 | Fix: TEN-06 counted a failed sign-in attempt as a test of a break-glass account, so an account that had never signed in successfully stopped being flagged once someone tried it. It now counts only a successful sign-in, and says when there were attempts but none succeeded. Found in a live break-glass drill. TEN-06's warnings say Microsoft Graph can take up to 24 hours to show a sign-in (they said a few hours). Regression tests, including one for dates that arrive as DateTime on PowerShell 7. |
 | 1.0.1 | 2026-11-25 | Fix: a relative `-OutputPath`, such as `.\Audits`, was resolved against the folder PowerShell started in rather than the current folder, so the reports failed to write ("Could not find a part of the path") or went to the wrong place. Regression tests for the script and the module. |
 | 1.0.0 | 2026-11-25 | First public release, and on the PowerShell Gallery as `EntraAccessAudit`: `Install-Module EntraAccessAudit`. Getting started covers the Gallery and GitHub. Dependabot keeps the workflow's GitHub Actions up to date. |
 | 0.9.0 | 2026-11-25 | The audit is also a PowerShell module, `EntraAccessAudit`, built by `tools/Build-Module.ps1` for the PowerShell Gallery (published from 1.0.0): `Invoke-EntraAccessAudit` runs the same script with the same parameters and help, and sets `$LASTEXITCODE`. The tests build and import it on both editions, and lint checks the built module. README: The module, Publishing the module. Fix: Unattended runs said to grant seven permissions; there are eight since 0.7.0. |
